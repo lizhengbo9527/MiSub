@@ -29,7 +29,7 @@
             <option value="clash-verge/v2.4.3">Clash Verge</option>
             <option value="clash.meta">Clash Meta</option>
             <option value="v2rayN/7.23">v2rayN</option>
-            <option value="Loon/1005 CFNetwork/3860.500.112 Darwin/25.4.0 iPhone16,2">Loon</option>
+            <option value="Loon/975 CFNetwork/3860.700.1 Darwin/25.6.0">Loon</option>
             <option value="Shadowrocket/1.9.0">Shadowrocket</option>
             <option value="Mozilla/5.0">Mozilla</option>
         </select>
