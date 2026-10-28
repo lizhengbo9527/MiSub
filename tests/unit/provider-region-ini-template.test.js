@@ -152,90 +152,90 @@ describe('机场与机场-地区 INI 模板', () => {
     it(
         'creates source/region groups and appends them without replacing base group settings or rules',
         async () => {
-        const storageAdapter = createMemoryStorage({
-            misub_rule_templates_v1: [
-                {
-                    id: 'provider-region',
-                    name: '机场与地区分组',
-                    type: 'ini',
-                    content: TEMPLATE,
-                    enabled: true,
+            const storageAdapter = createMemoryStorage({
+                misub_rule_templates_v1: [
+                    {
+                        id: 'provider-region',
+                        name: '机场与地区分组',
+                        type: 'ini',
+                        content: TEMPLATE,
+                        enabled: true,
+                    },
+                ],
+            });
+    
+            vi.stubGlobal(
+                'fetch',
+                vi.fn(async () => new Response(BASE_TEMPLATE, { status: 200 }))
+            );
+    
+            const result = await ProcessorService.renderOutput({
+                targetFormat: 'clash',
+                combinedNodeList: NODE_LIST,
+                subName: 'Provider Region Test',
+                config: {
+                    UpdateInterval: 86400,
+                    clashBaseTemplateUrl: 'https://example.com/base.yaml',
                 },
-            ],
-        });
-
-        vi.stubGlobal(
-            'fetch',
-            vi.fn(async () => new Response(BASE_TEMPLATE, { status: 200 }))
-        );
-
-        const result = await ProcessorService.renderOutput({
-            targetFormat: 'clash',
-            combinedNodeList: NODE_LIST,
-            subName: 'Provider Region Test',
-            config: {
-                UpdateInterval: 86400,
-                clashBaseTemplateUrl: 'https://example.com/base.yaml',
-            },
-            builtinOptions: {
-                ruleLevel: 'std',
-                enableUdp: true,
-                skipCertVerify: false,
-            },
-            templateSource: { kind: 'custom', value: 'provider-region' },
-            managedConfigUrl: 'https://example.com/sub?target=clash',
-            storageAdapter,
-        });
-
-        const parsed = yaml.load(result.content);
-        const groups = new Map(parsed['proxy-groups'].map((group) => [group.name, group]));
-        const defaultGroup = groups.get('默认代理');
-        const aiGroup = groups.get('AI');
-        const hkGroup = groups.get('香港');
-        const hkAutoGroup = groups.get('香港-自动选择');
-
-        expect(parsed.proxies.map((proxy) => proxy.name)).toEqual(
-            expect.arrayContaining([
-                '🇨🇳 直连 | 双栈',
-                '良心云 | 🇭🇰 香港01',
-                '良心云 | 🇯🇵 日本01',
-                'AshCloud | 🇭🇰 香港01',
-                'AshCloud | 🇯🇵 日本01',
-                'AshCloud | 🇲🇴 澳门01',
-            ])
-        );
-
-        expect(defaultGroup.proxies).toEqual(
-            expect.arrayContaining([
-                '香港',
-                '日本',
-                '良心云',
-                'AshCloud',
-                '良心云-日本',
-                'AshCloud-澳门',
-            ])
-        );
-        expect(defaultGroup.icon).toBe('https://example.com/default.svg');
-        expect(aiGroup['default-selected']).toBe('美国');
-        expect(aiGroup.proxies).toEqual(
-            expect.arrayContaining(['美国', 'AshCloud', 'AshCloud-日本', '良心云-日本'])
-        );
-        expect(hkGroup.icon).toBe('https://example.com/hk.svg');
-        expect(hkGroup.filter).toBe('香港|HK');
-        expect(hkGroup.proxies).toEqual(
-            expect.arrayContaining(['香港-自动选择', '良心云-香港', 'AshCloud-香港'])
-        );
-        expect(hkAutoGroup.type).toBe('url-test');
-        expect(hkAutoGroup.filter).toBe('香港|HK');
-        expect(hkAutoGroup.proxies).toEqual(
-            expect.arrayContaining(['良心云-香港', 'AshCloud-香港'])
-        );
-        expect(groups.has('良心云-日本')).toBe(true);
-        expect(groups.has('AshCloud-澳门')).toBe(true);
-        expect(groups.has('良心云-澳门')).toBe(false);
-        expect(parsed.rules).toEqual(['MATCH,默认代理']);
-        expect(parsed['rule-providers'].BASE.url).toBe('https://example.com/base.yaml');
-        expect(parsed['proxy-groups'].some((group) => group.name === '🌐 DNS 出口')).toBe(false);
-        }
+                builtinOptions: {
+                    ruleLevel: 'std',
+                    enableUdp: true,
+                    skipCertVerify: false,
+                },
+                templateSource: { kind: 'custom', value: 'provider-region' },
+                managedConfigUrl: 'https://example.com/sub?target=clash',
+                storageAdapter,
+            });
+    
+            const parsed = yaml.load(result.content);
+            const groups = new Map(parsed['proxy-groups'].map((group) => [group.name, group]));
+            const defaultGroup = groups.get('默认代理');
+            const aiGroup = groups.get('AI');
+            const hkGroup = groups.get('香港');
+            const hkAutoGroup = groups.get('香港-自动选择');
+    
+            expect(parsed.proxies.map((proxy) => proxy.name)).toEqual(
+                expect.arrayContaining([
+                    '🇨🇳 直连 | 双栈',
+                    '良心云 | 🇭🇰 香港01',
+                    '良心云 | 🇯🇵 日本01',
+                    'AshCloud | 🇭🇰 香港01',
+                    'AshCloud | 🇯🇵 日本01',
+                    'AshCloud | 🇲🇴 澳门01',
+                ])
+            );
+    
+            expect(defaultGroup.proxies).toEqual(
+                expect.arrayContaining([
+                    '香港',
+                    '日本',
+                    '良心云',
+                    'AshCloud',
+                    '良心云-日本',
+                    'AshCloud-澳门',
+                ])
+            );
+            expect(defaultGroup.icon).toBe('https://example.com/default.svg');
+            expect(aiGroup['default-selected']).toBe('美国');
+            expect(aiGroup.proxies).toEqual(
+                expect.arrayContaining(['美国', 'AshCloud', 'AshCloud-日本', '良心云-日本'])
+            );
+            expect(hkGroup.icon).toBe('https://example.com/hk.svg');
+            expect(hkGroup.filter).toBe('香港|HK');
+            expect(hkGroup.proxies).toEqual(
+                expect.arrayContaining(['香港-自动选择', '良心云-香港', 'AshCloud-香港'])
+            );
+            expect(hkAutoGroup.type).toBe('url-test');
+            expect(hkAutoGroup.filter).toBe('香港|HK');
+            expect(hkAutoGroup.proxies).toEqual(
+                expect.arrayContaining(['良心云-香港', 'AshCloud-香港'])
+            );
+            expect(groups.has('良心云-日本')).toBe(true);
+            expect(groups.has('AshCloud-澳门')).toBe(true);
+            expect(groups.has('良心云-澳门')).toBe(false);
+            expect(parsed.rules).toEqual(['MATCH,默认代理']);
+            expect(parsed['rule-providers'].BASE.url).toBe('https://example.com/base.yaml');
+            expect(parsed['proxy-groups'].some((group) => group.name === '🌐 DNS 出口')).toBe(false);
+            }
     );
 });
