@@ -159,7 +159,13 @@ rule-providers:
                     id: 'tpl-a',
                     name: '本地模板',
                     type: 'ini',
-                    content: ['[Proxy Group]', '🚀 节点选择 = select, HK-01, DIRECT', '', '[Rule]', 'MATCH,🚀 节点选择'].join('\\n'),
+                    content: [
+                        '[Proxy Group]',
+                        '🚀 节点选择 = select, HK-01, DIRECT',
+                        '',
+                        '[Rule]',
+                        'MATCH,🚀 节点选择',
+                    ].join('\n'),
                 },
             ],
         });

@@ -440,7 +440,9 @@
                     >
                         {{ t('settings.transformCustomTemplateSelectHint') }}
                     </p>
-                    <div class="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 dark:border-indigo-500/20 dark:bg-indigo-900/10">
+                    <div
+                        class="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 dark:border-indigo-500/20 dark:bg-indigo-900/10"
+                    >
                         <label
                             for="clash-base-template-url"
                             class="mb-1.5 block text-[11px] font-semibold text-indigo-700 dark:text-indigo-300"

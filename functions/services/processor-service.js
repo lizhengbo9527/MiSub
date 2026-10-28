@@ -112,7 +112,6 @@ export function renderClashYamlProfileTemplate(templateText, nodeList, options =
     );
 }
 
-
 function mergeNamedEntries(baseEntries, overlayEntries) {
     const merged = new Map();
     const unnamed = [];
@@ -167,7 +166,11 @@ function mergeClashProxyLists(baseProxies, overlayProxies, overlayGroups, overla
                 group.proxies = group.proxies.map((name) => renamedNames.get(name) || name);
             }
         }
-        for (let ruleIndex = 0; ruleIndex < (Array.isArray(overlayRules) ? overlayRules.length : 0); ruleIndex += 1) {
+        for (
+            let ruleIndex = 0;
+            ruleIndex < (Array.isArray(overlayRules) ? overlayRules.length : 0);
+            ruleIndex += 1
+        ) {
             const rule = overlayRules[ruleIndex];
             if (typeof rule !== 'string') continue;
             const parts = rule.split(',');
@@ -214,7 +217,12 @@ function filterProxyProviders(proxyProviders, groups) {
  * 将完整 Clash YAML 作为基础配置，并用 INI 模板生成的节点、策略组和规则覆盖动态部分。
  * 基础 YAML 负责网络、DNS、TUN、Hosts 等配置；INI 负责动态代理与分流。
  */
-export function renderClashYamlWithIniOverlay(baseTemplateText, iniTemplateText, nodeList, options = {}) {
+export function renderClashYamlWithIniOverlay(
+    baseTemplateText,
+    iniTemplateText,
+    nodeList,
+    options = {}
+) {
     if (!isClashYamlProfileTemplate(baseTemplateText)) {
         throw new Error('Clash YAML 基础模板无效：必须包含 proxy-groups 和 rules 数组');
     }
@@ -402,7 +410,9 @@ export class ProcessorService {
                     dnsMode: builtinOptions.dnsMode || 'clean',
                 };
                 const clashBaseTemplateUrl =
-                    targetFormat === 'clash' ? String(config.clashBaseTemplateUrl || '').trim() : '';
+                    targetFormat === 'clash'
+                        ? String(config.clashBaseTemplateUrl || '').trim()
+                        : '';
 
                 if (clashBaseTemplateUrl) {
                     const baseTemplateText = await fetchTransformTemplate(
