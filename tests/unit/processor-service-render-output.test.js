@@ -154,6 +154,139 @@ rules:
         expect(isClashYamlProfileTemplate('[Proxy Group]\nProxy = select, A')).toBe(false);
     });
 
+    it('keeps static proxies from a remote Clash YAML template that omits rules', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(
+                async () =>
+                    new Response(
+                        `
+mixed-port: 7890
+proxies:
+  - name: 'Static-Direct'
+    type: direct
+proxy-groups:
+  - name: 🚀 节点选择
+    type: select
+    proxies:
+      - Static-Direct
+      - DIRECT
+`,
+                        { status: 200 }
+                    )
+            )
+        );
+
+        const result = await ProcessorService.renderOutput({
+            targetFormat: 'clash',
+            combinedNodeList: NODE_LIST,
+            subName: 'Demo',
+            config: { UpdateInterval: 86400 },
+            builtinOptions: { ruleLevel: 'std', enableUdp: true, skipCertVerify: false },
+            templateSource: { kind: 'remote', value: 'https://example.com/template' },
+            managedConfigUrl: 'https://example.com/sub',
+            storageAdapter,
+        });
+
+        expect(result.headers['X-MiSub-Template-Mode']).toBe('clash-yaml-profile');
+        expect(result.content).toContain('Static-Direct');
+        expect(result.content).toContain('name: 🇭🇰 HK-01');
+    });
+
+    it('keeps static proxies when a remote Clash YAML template only declares proxies', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(
+                async () =>
+                    new Response(
+                        `
+mixed-port: 7890
+proxies:
+  - name: 'Static-Direct'
+    type: direct
+`,
+                        { status: 200 }
+                    )
+            )
+        );
+
+        const result = await ProcessorService.renderOutput({
+            targetFormat: 'clash',
+            combinedNodeList: NODE_LIST,
+            subName: 'Demo',
+            config: { UpdateInterval: 86400 },
+            builtinOptions: { ruleLevel: 'std', enableUdp: true, skipCertVerify: false },
+            templateSource: { kind: 'remote', value: 'https://example.com/template' },
+            managedConfigUrl: 'https://example.com/sub',
+            storageAdapter,
+        });
+
+        expect(result.headers['X-MiSub-Template-Mode']).toBe('clash-yaml-profile');
+        expect(result.content).toContain('Static-Direct');
+        expect(result.content).toContain('name: 🇭🇰 HK-01');
+    });
+
+    it('detects ini templates by content when the remote url has no extension', async () => {
+        const result = await ProcessorService.renderOutput({
+            targetFormat: 'clash',
+            combinedNodeList: NODE_LIST,
+            subName: 'Demo',
+            config: { UpdateInterval: 86400 },
+            builtinOptions: { ruleLevel: 'std', enableUdp: true, skipCertVerify: false },
+            templateSource: { kind: 'remote', value: 'https://example.com/template' },
+            managedConfigUrl: 'https://example.com/sub',
+            storageAdapter,
+        });
+
+        expect(result.content).toContain('name: MyGroup');
+        expect(result.content).toContain('MATCH,MyGroup');
+        expect(result.headers['X-MiSub-Template-Mode']).toBeUndefined();
+    });
+
+    it('renders a configured Clash YAML base template when no rule template is selected', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(
+                async () =>
+                    new Response(
+                        `
+mixed-port: 7890
+proxies:
+  - name: 'Static-Direct'
+    type: direct
+proxy-groups:
+  - name: 🚀 节点选择
+    type: select
+    proxies:
+      - Static-Direct
+      - DIRECT
+rules:
+  - MATCH,🚀 节点选择
+`,
+                        { status: 200 }
+                    )
+            )
+        );
+
+        const result = await ProcessorService.renderOutput({
+            targetFormat: 'clash',
+            combinedNodeList: NODE_LIST,
+            subName: 'Demo',
+            config: {
+                UpdateInterval: 86400,
+                clashBaseTemplateUrl: 'https://example.com/base.yaml',
+            },
+            builtinOptions: { ruleLevel: 'std', enableUdp: true, skipCertVerify: false },
+            templateSource: { kind: 'none', value: '' },
+            managedConfigUrl: 'https://example.com/sub',
+            storageAdapter,
+        });
+
+        expect(result.headers['X-MiSub-Template-Mode']).toBe('clash-yaml-profile');
+        expect(result.content).toContain('Static-Direct');
+        expect(result.content).toContain('name: 🇭🇰 HK-01');
+    });
+
     it('passes userAgent into builtin generator so Hiddify profile rendering omits rule providers', async () => {
         const result = await ProcessorService.renderOutput({
             targetFormat: 'clash',

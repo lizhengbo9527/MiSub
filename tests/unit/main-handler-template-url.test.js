@@ -205,6 +205,22 @@ describe('Main handler template url', () => {
                 templateSource: resolveTemplateSource('https://example.com/subconverter.ini'),
             })
         ).toBe(false);
+        expect(
+            shouldRenderClashYamlProfileTemplateLocally({
+                isExternalMode: true,
+                targetFormat: 'clash',
+                templateSource: resolveTemplateSource('https://example.com/api/template?id=1'),
+            })
+        ).toBe(true);
+        expect(
+            shouldRenderClashYamlProfileTemplateLocally({
+                isExternalMode: true,
+                targetFormat: 'clash',
+                templateSource: resolveTemplateSource(
+                    'https://github.com/Luckylos/shellcrashyaml/blob/main/subconverter-shellcrash-needs.yaml'
+                ),
+            })
+        ).toBe(true);
     });
 
     it('should normalize template targets and expose compatibility table', () => {

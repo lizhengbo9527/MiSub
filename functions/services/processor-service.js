@@ -34,6 +34,16 @@ function getTemplateExtension(templateUrl) {
     }
 }
 
+const INI_TEMPLATE_SECTION_RE = /^\s*\[(custom|proxy\s*group|rule|ruleset|proxy|server|general)\]/im;
+
+/**
+ * INI 模板的内容特征。远程模板 URL 不一定带 .ini 后缀，
+ * 因此不能只靠扩展名判断模板类型。
+ */
+export function hasIniTemplateShape(templateText) {
+    return typeof templateText === 'string' && INI_TEMPLATE_SECTION_RE.test(templateText);
+}
+
 export function isIniTemplateSource(templateSource, builtinTemplateEntry = null) {
     if (builtinTemplateEntry?.format === 'ini') return true;
     if (templateSource?.kind === 'custom') return true;
@@ -59,17 +69,31 @@ function deduplicateProxyNames(proxies) {
     });
 }
 
+const CLASH_PROFILE_SECTIONS = ['proxy-groups', 'rules', 'proxies', 'proxy-providers'];
+
+/**
+ * 判断模板文本是否是完整的 Clash/Mihomo 配置。
+ * 不要求 proxy-groups 与 rules 同时齐全：远程模板可能只提供其中一部分，
+ * 但其中的静态 proxies 仍然需要保留，不能回退到内置渲染把它们覆盖掉。
+ */
 export function isClashYamlProfileTemplate(templateText) {
     if (typeof templateText !== 'string' || templateText.trim() === '') return false;
 
     try {
         const parsed = yaml.load(templateText);
-        return Boolean(
-            parsed &&
-            typeof parsed === 'object' &&
-            !Array.isArray(parsed) &&
-            Array.isArray(parsed['proxy-groups']) &&
-            Array.isArray(parsed.rules)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+
+        const hasProfileSection = CLASH_PROFILE_SECTIONS.some((key) => key in parsed);
+        if (!hasProfileSection) return false;
+
+        // 至少有一项是 Clash 配置特有的数组/对象结构，避免把普通 YAML 文档误判为配置模板。
+        return (
+            Array.isArray(parsed['proxy-groups']) ||
+            Array.isArray(parsed.rules) ||
+            Array.isArray(parsed.proxies) ||
+            (parsed['proxy-providers'] &&
+                typeof parsed['proxy-providers'] === 'object' &&
+                !Array.isArray(parsed['proxy-providers']))
         );
     } catch {
         return false;
@@ -224,7 +248,7 @@ export function renderClashYamlWithIniOverlay(
     options = {}
 ) {
     if (!isClashYamlProfileTemplate(baseTemplateText)) {
-        throw new Error('Clash YAML 基础模板无效：必须包含 proxy-groups 和 rules 数组');
+        throw new Error('Clash YAML 基础模板无效：必须包含 proxies / proxy-groups / rules 等配置段');
     }
 
     const baseConfig = yaml.load(baseTemplateText);
@@ -390,10 +414,20 @@ export class ProcessorService {
                 builtinTemplateEntry?.content ||
                 customTemplateEntry?.content ||
                 (await fetchTransformTemplate(storageAdapter, remoteTemplateUrl));
-            const isIniTemplate = isIniTemplateSource(
-                templateSource,
-                builtinTemplateEntry || customTemplateEntry
-            );
+            // 以模板内容为准：远程 / 内置模板即使被标记为 ini，只要内容是完整 Clash 配置，
+            // 就按 YAML profile 渲染，避免静态 proxies 被内置渲染覆盖。
+            const isYamlProfileTemplate =
+                targetFormat === 'clash' && isClashYamlProfileTemplate(templateText);
+            const isIniTemplate =
+                !isYamlProfileTemplate &&
+                (hasIniTemplateShape(templateText) ||
+                    isIniTemplateSource(templateSource, builtinTemplateEntry || customTemplateEntry));
+
+            if (templateText && !isIniTemplate && !isYamlProfileTemplate) {
+                console.warn(
+                    '[Template] 无法识别的模板格式，已回退到内置渲染（模板中的静态配置不会保留）'
+                );
+            }
 
             if (templateText && isIniTemplate) {
                 const renderParams = {
@@ -454,11 +488,7 @@ export class ProcessorService {
                             break;
                     }
                 }
-            } else if (
-                templateText &&
-                targetFormat === 'clash' &&
-                isClashYamlProfileTemplate(templateText)
-            ) {
+            } else if (templateText && isYamlProfileTemplate) {
                 finalContent = renderClashYamlProfileTemplate(
                     templateText,
                     combinedNodeList,
@@ -466,6 +496,36 @@ export class ProcessorService {
                 );
                 contentType = 'application/x-yaml; charset=utf-8';
                 headers['X-MiSub-Template-Mode'] = 'clash-yaml-profile';
+            }
+        } else if (shouldApplyTemplate && targetFormat === 'clash') {
+            // 只配置了 Clash YAML 基础模板、没有选择规则模板时，直接以基础模板渲染，
+            // 避免回退到内置渲染把模板里的静态节点覆盖掉。
+            const clashBaseTemplateUrl = String(config.clashBaseTemplateUrl || '').trim();
+            if (clashBaseTemplateUrl) {
+                try {
+                    const baseTemplateText = await fetchTransformTemplate(
+                        storageAdapter,
+                        clashBaseTemplateUrl
+                    );
+                    if (isClashYamlProfileTemplate(baseTemplateText)) {
+                        finalContent = renderClashYamlProfileTemplate(
+                            baseTemplateText,
+                            combinedNodeList,
+                            builtinOptions
+                        );
+                        contentType = 'application/x-yaml; charset=utf-8';
+                        headers['X-MiSub-Template-Mode'] = 'clash-yaml-profile';
+                    } else {
+                        console.warn(
+                            '[Template] Clash YAML 基础模板格式无效，已回退到内置渲染（模板中的静态配置不会保留）'
+                        );
+                    }
+                } catch (err) {
+                    console.warn(
+                        '[Template] Clash YAML 基础模板拉取失败，已回退到内置渲染：',
+                        err?.message || err
+                    );
+                }
             }
         }
 
