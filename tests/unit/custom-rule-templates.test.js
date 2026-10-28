@@ -205,5 +205,4 @@ rule-providers:
         expect(parsed['rule-providers'].BASE.url).toBe('https://example.com/base.yaml');
         expect(parsed['proxy-providers']).toBeUndefined();
     });
-
 });
