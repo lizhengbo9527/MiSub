@@ -14,6 +14,7 @@ describe('Transform config settings', () => {
         expect(DEFAULT_SETTINGS.ruleLevel).toBe('std');
         expect('clashRuleLevel' in DEFAULT_SETTINGS).toBe(false);
         expect(DEFAULT_SETTINGS.transformConfig).toBe('');
+        expect(DEFAULT_SETTINGS.clashBaseTemplateUrl).toBe('');
         expect(DEFAULT_PROFILE_FORM.ruleLevel).toBe('');
         expect('clashRuleLevel' in DEFAULT_PROFILE_FORM).toBe(false);
         expect(DEFAULT_PROFILE_FORM.transformConfigMode).toBe('global');

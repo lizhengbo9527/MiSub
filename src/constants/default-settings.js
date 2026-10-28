@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS = {
     defaultLocale: 'zh-CN',
     transformConfigMode: 'builtin',
     transformConfig: '',
+    clashBaseTemplateUrl: '',
     ruleLevel: 'std',
     builtinSkipCertVerify: false,
     builtinEnableUdp: true,

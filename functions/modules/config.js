@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS = {
     profileToken: 'profiles',
     transformConfigMode: 'builtin',
     transformConfig: '',
+    clashBaseTemplateUrl: '',
     ruleLevel: 'std',
     builtinSkipCertVerify: false,
     builtinEnableUdp: true,

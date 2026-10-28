@@ -1162,6 +1162,10 @@ export const messages = {
             transformRemotePlaceholder: '输入远程 .ini 配置文件 URL',
             transformCustomTemplateSelectHint:
                 '请在下方“自定义规则模板”中新建并保存模板，然后在此处选择 custom: 开头的模板项。',
+            clashBaseTemplateUrlLabel: 'Clash YAML 基础模板 URL（可选）',
+            clashBaseTemplateUrlPlaceholder: '粘贴完整的 Mihomo / Clash YAML Raw URL',
+            clashBaseTemplateUrlHint:
+                '仅内置引擎的 Clash 输出且选择 INI 规则模板时生效。基础 YAML 保留 DNS、端口、TUN、Hosts 等配置；INI 模板提供策略组和分流规则。留空则沿用现有渲染逻辑。',
             transformExternalParams: '第三方后端参数',
             transformBackend: '转换后端',
             transformBackendHint:
@@ -3038,6 +3042,10 @@ export const messages = {
             transformRemotePlaceholder: 'Enter remote .ini config URL',
             transformCustomTemplateSelectHint:
                 'Create and save a template in “Custom rule templates” below, then select a custom: template item here.',
+            clashBaseTemplateUrlLabel: 'Clash YAML base template URL (optional)',
+            clashBaseTemplateUrlPlaceholder: 'Paste a full Mihomo / Clash YAML Raw URL',
+            clashBaseTemplateUrlHint:
+                'Used only by the built-in engine for Clash output when an INI rule template is selected. The base YAML retains DNS, ports, TUN, Hosts, and other settings; the INI template supplies proxy groups and routing rules. Leave blank to keep existing rendering behavior.',
             transformExternalParams: 'External backend parameters',
             transformBackend: 'Conversion backend',
             transformBackendHint:

@@ -119,4 +119,85 @@ describe('自定义规则模板 Phase 1 后端模型/API/渲染', () => {
         expect(parsed['proxy-groups'].some((group) => group.name === '🚀 节点选择')).toBe(true);
         expect(parsed.rules).toContain('MATCH,🚀 节点选择');
     });
+
+    it('merges a remote Clash YAML base with a saved INI rule template', async () => {
+        const baseTemplate = `
+common_group: &common_group
+  type: select
+  proxies:
+    - DIRECT
+mixed-port: 7890
+allow-lan: true
+bind-address: '*'
+ipv6: true
+dns:
+  enable: true
+  nameserver:
+    - https://dns.example/dns-query
+proxies:
+  - name: '🇨🇳 直连 | 双栈'
+    type: direct
+proxy-providers:
+  provider1:
+    type: http
+    url: ''
+    path: ./proxy_provider/provider1.yaml
+proxy-groups:
+  - name: '基础策略组'
+    <<: *common_group
+rules:
+  - MATCH,基础策略组
+rule-providers:
+  BASE:
+    type: http
+    behavior: domain
+    url: https://example.com/base.yaml
+`;
+        const storageAdapter = createMemoryStorage({
+            misub_rule_templates_v1: [
+                {
+                    id: 'tpl-a',
+                    name: '本地模板',
+                    type: 'ini',
+                    content: ['[Proxy Group]', '🚀 节点选择 = select, HK-01, DIRECT', '', '[Rule]', 'MATCH,🚀 节点选择'].join('\\n'),
+                },
+            ],
+        });
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(async () => new Response(baseTemplate, { status: 200 }))
+        );
+
+        const result = await ProcessorService.renderOutput({
+            targetFormat: 'clash',
+            combinedNodeList: NODE_LIST,
+            subName: 'Demo',
+            config: {
+                UpdateInterval: 86400,
+                clashBaseTemplateUrl: 'https://example.com/base.yaml',
+            },
+            builtinOptions: { ruleLevel: 'none', enableUdp: true, skipCertVerify: false },
+            templateSource: { kind: 'custom', value: 'tpl-a' },
+            managedConfigUrl: 'https://example.com/sub',
+            storageAdapter,
+        });
+
+        const parsed = yaml.load(result.content);
+        expect(result.contentType).toBe('application/x-yaml; charset=utf-8');
+        expect(result.headers['X-MiSub-Template-Mode']).toBe('clash-yaml-ini-overlay');
+        expect(parsed['mixed-port']).toBe(7890);
+        expect(parsed['allow-lan']).toBe(true);
+        expect(parsed['bind-address']).toBe('*');
+        expect(parsed.ipv6).toBe(true);
+        expect(parsed.dns.nameserver).toContain('https://dns.example/dns-query');
+        expect(parsed.proxies.some((proxy) => proxy.name === '🇨🇳 直连 | 双栈')).toBe(true);
+        expect(parsed.proxies.some((proxy) => proxy.name === '🇭🇰 HK-01')).toBe(true);
+        expect(parsed['proxy-groups'].some((group) => group.name === '基础策略组')).toBe(true);
+        expect(parsed['proxy-groups'].some((group) => group.name === '🚀 节点选择')).toBe(true);
+        expect(parsed.rules).toContain('MATCH,🚀 节点选择');
+        expect(parsed.rules).not.toContain('MATCH,基础策略组');
+        expect(parsed['rule-providers'].BASE.url).toBe('https://example.com/base.yaml');
+        expect(parsed['proxy-providers']).toBeUndefined();
+    });
+
 });
