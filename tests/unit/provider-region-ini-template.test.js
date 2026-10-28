@@ -163,12 +163,12 @@ describe('机场与机场-地区 INI 模板', () => {
                     },
                 ],
             });
-    
+
             vi.stubGlobal(
                 'fetch',
                 vi.fn(async () => new Response(BASE_TEMPLATE, { status: 200 }))
             );
-    
+
             const result = await ProcessorService.renderOutput({
                 targetFormat: 'clash',
                 combinedNodeList: NODE_LIST,
@@ -186,14 +186,14 @@ describe('机场与机场-地区 INI 模板', () => {
                 managedConfigUrl: 'https://example.com/sub?target=clash',
                 storageAdapter,
             });
-    
+
             const parsed = yaml.load(result.content);
             const groups = new Map(parsed['proxy-groups'].map((group) => [group.name, group]));
             const defaultGroup = groups.get('默认代理');
             const aiGroup = groups.get('AI');
             const hkGroup = groups.get('香港');
             const hkAutoGroup = groups.get('香港-自动选择');
-    
+
             expect(parsed.proxies.map((proxy) => proxy.name)).toEqual(
                 expect.arrayContaining([
                     '🇨🇳 直连 | 双栈',
@@ -204,7 +204,7 @@ describe('机场与机场-地区 INI 模板', () => {
                     'AshCloud | 🇲🇴 澳门01',
                 ])
             );
-    
+
             expect(defaultGroup.proxies).toEqual(
                 expect.arrayContaining([
                     '香港',
