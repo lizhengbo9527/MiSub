@@ -100,7 +100,7 @@ export function renderClashYamlProfileTemplate(templateText, nodeList, options =
                 mode: options.dnsMode,
                 proxyGroup: '🌐 DNS 出口',
             }),
-            proxies,
+            proxies: mergeClashProxyLists(config.proxies, proxies, [], []),
         },
         {
             indent: 2,
