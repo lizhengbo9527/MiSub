@@ -115,6 +115,22 @@ MiSub 会据此展开：
 
 ---
 
+
+## 在完整 Clash YAML 上追加策略组成员
+
+当使用“完整 Clash YAML 基础模板 + INI 模板”时，普通 [Proxy Group] 中与基础 YAML 同名的策略组默认按覆盖语义处理。如果只想往现有组里增加成员，请使用 `[Proxy Group Append]`：
+
+```ini
+[Proxy Group Append]
+默认代理 = select, 良心云, AshCloud
+AI = select, AshCloud-日本, AshCloud-美国
+香港 = select, 良心云-香港, AshCloud-香港
+```
+
+此处的 `select` 是语法占位；合并时只追加逗号后面的成员，保留基础 YAML 原组的 `type`、`icon`、`filter`、`include-all`、测速参数等配置。目标组不存在时会跳过该条目。该语法用于 Clash YAML + INI 合并模式；普通独立 INI 渲染没有基础组可供追加。
+
+完整示例见 [`provider-region-groups.ini`](./provider-region-groups.ini)，适配当前 AIsouler 配置中的 `默认代理`、`手动选择`、`Google`、`AI`、`Telegram`、`Steam`、`漏网之鱼` 以及五个地区组。
+
 ## 🚀 如何在 GitHub 上使用
 
 1.  将上述规则保存为 `my-rules.list` 或直接集成到你的 `.ini` 模板文件中。

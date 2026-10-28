@@ -23,7 +23,8 @@ function resolveGroupFilters(model) {
             }
 
             try {
-                const regex = new RegExp(filter, 'i');
+                const regexSource = String(filter).replace(/^\(\?i\)/i, '');
+                const regex = new RegExp(regexSource, 'i');
                 proxyNames.forEach((name) => {
                     if (regex.test(name)) {
                         currentMembers.add(name);
