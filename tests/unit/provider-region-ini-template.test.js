@@ -15,6 +15,7 @@ const NODE_LIST = [
     'trojan://pass@3.3.3.3:443#AshCloud%20%7C%20%F0%9F%87%AD%F0%9F%87%B0%20%E9%A6%99%E6%B8%AF01',
     'trojan://pass@4.4.4.4:443#AshCloud%20%7C%20%F0%9F%87%AF%F0%9F%87%B5%20%E6%97%A5%E6%9C%AC01',
     'trojan://pass@5.5.5.5:443#AshCloud%20%7C%20%F0%9F%87%B2%F0%9F%87%B4%20%E6%BE%B3%E9%97%A801',
+    'trojan://pass@6.6.6.6:443#%F0%9F%8C%90%20CF%E4%BC%98%E9%80%89%20%F0%9F%8C%90%20%E5%85%B6%E4%BB%96%231',
 ].join('\n');
 
 const BASE_TEMPLATE = `
@@ -202,6 +203,7 @@ describe('机场与机场-地区 INI 模板', () => {
                     'AshCloud | 🇭🇰 香港01',
                     'AshCloud | 🇯🇵 日本01',
                     'AshCloud | 🇲🇴 澳门01',
+                    '🌐 CF优选 🌐 其他#1',
                 ])
             );
 
@@ -213,12 +215,14 @@ describe('机场与机场-地区 INI 模板', () => {
                     'AshCloud',
                     '良心云-日本',
                     'AshCloud-澳门',
+                    'CF优选',
+                    'CF优选-其他',
                 ])
             );
             expect(defaultGroup.icon).toBe('https://example.com/default.svg');
             expect(aiGroup['default-selected']).toBe('美国');
             expect(aiGroup.proxies).toEqual(
-                expect.arrayContaining(['美国', 'AshCloud', 'AshCloud-日本', '良心云-日本'])
+                expect.arrayContaining(['美国', 'AshCloud', 'AshCloud-日本', '良心云-日本', 'CF优选', 'CF优选-其他'])
             );
             expect(hkGroup.icon).toBe('https://example.com/hk.svg');
             expect(hkGroup.filter).toBe('香港|HK');
@@ -231,6 +235,12 @@ describe('机场与机场-地区 INI 模板', () => {
                 expect.arrayContaining(['良心云-香港', 'AshCloud-香港'])
             );
             expect(groups.has('良心云-日本')).toBe(true);
+            expect(groups.has('CF优选')).toBe(true);
+            expect(groups.has('CF优选-自动选择')).toBe(true);
+            expect(groups.has('CF优选-其他')).toBe(true);
+            expect(groups.has('CF优选-其他-自动选择')).toBe(true);
+            expect(groups.get('CF优选-自动选择').filter).toContain('CF优选');
+            expect(groups.get('CF优选-其他-自动选择').filter).toContain('其他');
             expect(groups.has('AshCloud-澳门')).toBe(true);
             expect(groups.has('良心云-澳门')).toBe(false);
             expect(parsed.rules).toEqual(['MATCH,默认代理']);
