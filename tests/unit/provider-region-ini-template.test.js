@@ -222,7 +222,14 @@ describe('机场与机场-地区 INI 模板', () => {
             expect(defaultGroup.icon).toBe('https://example.com/default.svg');
             expect(aiGroup['default-selected']).toBe('美国');
             expect(aiGroup.proxies).toEqual(
-                expect.arrayContaining(['美国', 'AshCloud', 'AshCloud-日本', '良心云-日本', 'CF优选', 'CF优选-其他'])
+                expect.arrayContaining([
+                    '美国',
+                    'AshCloud',
+                    'AshCloud-日本',
+                    '良心云-日本',
+                    'CF优选',
+                    'CF优选-其他',
+                ])
             );
             expect(hkGroup.icon).toBe('https://example.com/hk.svg');
             expect(hkGroup.filter).toBe('香港|HK');
