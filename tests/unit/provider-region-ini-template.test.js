@@ -136,9 +136,7 @@ describe('机场与机场-地区 INI 模板', () => {
         const appendDefault = model.groups.find(
             (group) => group.name === '默认代理' && group.mergeMode === 'append'
         );
-        const autoJapan = model.groups.find(
-            (group) => group.name === 'AshCloud-日本-自动选择'
-        );
+        const autoJapan = model.groups.find((group) => group.name === 'AshCloud-日本-自动选择');
 
         expect(appendDefault.members).toContain('AshCloud');
         expect(appendDefault.members).toContain('AshCloud-日本');
@@ -151,7 +149,9 @@ describe('机场与机场-地区 INI 模板', () => {
         expect(autoJapan.filters[0]).toContain('JP');
     });
 
-    it('creates source/region groups and appends them without replacing base group settings or rules', async () => {
+    it(
+        'creates source/region groups and appends them without replacing base group settings or rules',
+        async () => {
         const storageAdapter = createMemoryStorage({
             misub_rule_templates_v1: [
                 {
@@ -206,7 +206,14 @@ describe('机场与机场-地区 INI 模板', () => {
         );
 
         expect(defaultGroup.proxies).toEqual(
-            expect.arrayContaining(['香港', '日本', '良心云', 'AshCloud', '良心云-日本', 'AshCloud-澳门'])
+            expect.arrayContaining([
+                '香港',
+                '日本',
+                '良心云',
+                'AshCloud',
+                '良心云-日本',
+                'AshCloud-澳门',
+            ])
         );
         expect(defaultGroup.icon).toBe('https://example.com/default.svg');
         expect(aiGroup['default-selected']).toBe('美国');
@@ -229,5 +236,6 @@ describe('机场与机场-地区 INI 模板', () => {
         expect(parsed.rules).toEqual(['MATCH,默认代理']);
         expect(parsed['rule-providers'].BASE.url).toBe('https://example.com/base.yaml');
         expect(parsed['proxy-groups'].some((group) => group.name === '🌐 DNS 出口')).toBe(false);
-    });
+        }
+    );
 });
