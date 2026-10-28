@@ -520,12 +520,23 @@ export function shouldRenderClashYamlProfileTemplateLocally({
 } = {}) {
     if (!isExternalMode || targetFormat !== 'clash' || templateSource?.kind !== 'remote')
         return false;
+
+    // 扩展名不是可靠依据：GitHub blob、短链、带查询参数的直链都可能没有 .yaml 后缀。
+    // 只要不是明确的 INI 模板，就先在本地尝试渲染；renderOutput 会在识别出
+    // Clash YAML profile 时返回结果，否则继续走第三方后端，行为保持兼容。
+    const rawUrl =
+        resolveExternalTemplateConfigUrl(templateSource) ||
+        String(templateSource.value || '').trim();
+    if (!rawUrl) return false;
+
+    let pathname = rawUrl;
     try {
-        const parsed = new URL(String(templateSource.value || '').trim());
-        return /\.ya?ml$/i.test(parsed.pathname);
+        pathname = new URL(rawUrl).pathname;
     } catch {
-        return /\.ya?ml(?:[?#].*)?$/i.test(String(templateSource.value || '').trim());
+        pathname = rawUrl.split('#')[0].split('?')[0];
     }
+
+    return !/\.ini$/i.test(pathname);
 }
 
 /**
@@ -1105,12 +1116,17 @@ export async function handleMisubRequest(context) {
 
     // 2. If external mode active, build the redirect URL and return 302
     if (isExternalMode && targetFormat !== 'base64') {
+        // 没有规则模板、但配置了 Clash YAML 基础模板时，也先尝试本地渲染，
+        // 否则会交给第三方后端，模板里的静态节点会被订阅节点覆盖。
+        const hasClashBaseTemplate =
+            targetFormat === 'clash' && Boolean(String(config.clashBaseTemplateUrl || '').trim());
         if (
             shouldRenderClashYamlProfileTemplateLocally({
                 isExternalMode,
                 targetFormat,
                 templateSource,
-            })
+            }) ||
+            hasClashBaseTemplate
         ) {
             try {
                 const userInfoHeader = buildUserInfoHeaderFromSubscriptions(
