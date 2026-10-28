@@ -112,6 +112,190 @@ export function renderClashYamlProfileTemplate(templateText, nodeList, options =
     );
 }
 
+function mergeNamedEntries(baseEntries, overlayEntries) {
+    const merged = new Map();
+    const unnamed = [];
+
+    for (const entry of [
+        ...(Array.isArray(baseEntries) ? baseEntries : []),
+        ...(Array.isArray(overlayEntries) ? overlayEntries : []),
+    ]) {
+        if (!entry || typeof entry !== 'object') continue;
+        const name = String(entry.name || '').trim();
+        if (!name) {
+            unnamed.push(entry);
+            continue;
+        }
+        merged.set(name, entry);
+    }
+
+    return [...merged.values(), ...unnamed];
+}
+
+function mergeClashProxyLists(baseProxies, overlayProxies, overlayGroups, overlayRules) {
+    const merged = Array.isArray(baseProxies)
+        ? baseProxies.filter((proxy) => proxy && typeof proxy === 'object')
+        : [];
+    const usedNames = new Set(
+        merged.map((proxy) => String(proxy.name || '').trim()).filter(Boolean)
+    );
+    const renamedNames = new Map();
+
+    for (const proxy of Array.isArray(overlayProxies) ? overlayProxies : []) {
+        if (!proxy || typeof proxy !== 'object') continue;
+        const originalName = String(proxy.name || '').trim();
+        if (!originalName || !usedNames.has(originalName)) {
+            merged.push(proxy);
+            if (originalName) usedNames.add(originalName);
+            continue;
+        }
+
+        let candidate = `${originalName} (MiSub)`;
+        let suffix = 2;
+        while (usedNames.has(candidate)) {
+            candidate = `${originalName} (MiSub ${suffix++})`;
+        }
+        renamedNames.set(originalName, candidate);
+        merged.push({ ...proxy, name: candidate });
+        usedNames.add(candidate);
+    }
+
+    if (renamedNames.size > 0) {
+        for (const group of Array.isArray(overlayGroups) ? overlayGroups : []) {
+            if (Array.isArray(group.proxies)) {
+                group.proxies = group.proxies.map((name) => renamedNames.get(name) || name);
+            }
+        }
+        for (
+            let ruleIndex = 0;
+            ruleIndex < (Array.isArray(overlayRules) ? overlayRules.length : 0);
+            ruleIndex += 1
+        ) {
+            const rule = overlayRules[ruleIndex];
+            if (typeof rule !== 'string') continue;
+            const parts = rule.split(',');
+            for (let index = 0; index < parts.length; index += 1) {
+                const trimmed = parts[index].trim();
+                if (!renamedNames.has(trimmed)) continue;
+                const leadingWhitespace = parts[index].match(/^\s*/)?.[0] || '';
+                const trailingWhitespace = parts[index].match(/\s*$/)?.[0] || '';
+                parts[index] = `${leadingWhitespace}${renamedNames.get(trimmed)}${trailingWhitespace}`;
+            }
+            overlayRules[ruleIndex] = parts.join(',');
+        }
+    }
+
+    return merged;
+}
+
+function filterProxyProviders(proxyProviders, groups) {
+    const entries = Object.entries(
+        proxyProviders && typeof proxyProviders === 'object' ? proxyProviders : {}
+    ).filter(([, provider]) => {
+        if (!provider || typeof provider !== 'object') return false;
+        const type = String(provider.type || '').toLowerCase();
+        const url = String(provider.url || '').trim();
+        const path = String(provider.path || '').trim();
+
+        if (type === 'http') return Boolean(url);
+        if (type === 'file') return Boolean(path);
+        return Boolean(url || path);
+    });
+    const validNames = new Set(entries.map(([name]) => name));
+
+    for (const group of Array.isArray(groups) ? groups : []) {
+        if (!Array.isArray(group.use)) continue;
+        const validUses = group.use.filter((name) => validNames.has(name));
+        if (validUses.length > 0) group.use = validUses;
+        else delete group.use;
+    }
+
+    return Object.fromEntries(entries);
+}
+
+/**
+ * 将完整 Clash YAML 作为基础配置，并用 INI 模板生成的节点、策略组和规则覆盖动态部分。
+ * 基础 YAML 负责网络、DNS、TUN、Hosts 等配置；INI 负责动态代理与分流。
+ */
+export function renderClashYamlWithIniOverlay(
+    baseTemplateText,
+    iniTemplateText,
+    nodeList,
+    options = {}
+) {
+    if (!isClashYamlProfileTemplate(baseTemplateText)) {
+        throw new Error('Clash YAML 基础模板无效：必须包含 proxy-groups 和 rules 数组');
+    }
+
+    const baseConfig = yaml.load(baseTemplateText);
+    const overlayText = renderClashFromIniTemplate(iniTemplateText, {
+        ...options,
+        nodeList,
+        targetFormat: 'clash',
+    });
+    const overlayConfig = yaml.load(overlayText);
+
+    if (!overlayConfig || typeof overlayConfig !== 'object' || Array.isArray(overlayConfig)) {
+        throw new Error('INI 规则模板未能生成有效的 Clash 配置');
+    }
+
+    const overlayGroups = Array.isArray(overlayConfig['proxy-groups'])
+        ? overlayConfig['proxy-groups']
+        : [];
+    const mergedGroups = mergeNamedEntries(baseConfig['proxy-groups'], overlayGroups);
+    const overlayRules = Array.isArray(overlayConfig.rules) ? overlayConfig.rules : [];
+    const mergedProxies = mergeClashProxyLists(
+        baseConfig.proxies,
+        overlayConfig.proxies,
+        overlayGroups,
+        overlayRules
+    );
+    const mergedRuleProviders = {
+        ...(baseConfig['rule-providers'] || {}),
+        ...(overlayConfig['rule-providers'] || {}),
+    };
+    const mergedProxyProviders = filterProxyProviders(
+        {
+            ...(baseConfig['proxy-providers'] || {}),
+            ...(overlayConfig['proxy-providers'] || {}),
+        },
+        mergedGroups
+    );
+
+    const mergedConfig = {
+        ...overlayConfig,
+        ...baseConfig,
+        proxies: mergedProxies,
+        'proxy-groups': mergedGroups,
+        rules: overlayRules.length > 0 ? overlayRules : baseConfig.rules,
+    };
+
+    if (Object.keys(mergedRuleProviders).length > 0) {
+        mergedConfig['rule-providers'] = mergedRuleProviders;
+    } else {
+        delete mergedConfig['rule-providers'];
+    }
+
+    if (Object.keys(mergedProxyProviders).length > 0) {
+        mergedConfig['proxy-providers'] = mergedProxyProviders;
+    } else {
+        delete mergedConfig['proxy-providers'];
+    }
+
+    // 默认保留基础 YAML 的 DNS；仅在用户显式配置自定义 DNS 时采用 INI 渲染结果。
+    if (String(options.customDnsOverride || '').trim() && overlayConfig.dns) {
+        mergedConfig.dns = overlayConfig.dns;
+    }
+
+    return yaml.dump(mergedConfig, {
+        indent: 2,
+        lineWidth: -1,
+        noRefs: true,
+        quotingType: '"',
+        forceQuotes: false,
+    });
+}
+
 export class ProcessorService {
     /**
      * Generate nodes based on target format and configuration
@@ -225,31 +409,50 @@ export class ProcessorService {
                     customDnsOverride: builtinOptions.customDnsOverride || '',
                     dnsMode: builtinOptions.dnsMode || 'clean',
                 };
+                const clashBaseTemplateUrl =
+                    targetFormat === 'clash'
+                        ? String(config.clashBaseTemplateUrl || '').trim()
+                        : '';
 
-                switch (targetFormat) {
-                    case 'clash':
-                        finalContent = renderClashFromIniTemplate(templateText, renderParams);
-                        contentType = 'application/x-yaml; charset=utf-8';
-                        break;
-                    case 'singbox':
-                    case 'sing-box':
-                        finalContent = renderSingboxFromIniTemplate(templateText, renderParams);
-                        contentType = 'application/json; charset=utf-8';
-                        break;
-                    case 'surge':
-                    case 'surge&ver=4':
-                        finalContent = renderSurgeFromIniTemplate(templateText, renderParams);
-                        break;
-                    case 'loon':
-                        finalContent = renderLoonFromIniTemplate(templateText, renderParams);
-                        break;
-                    case 'quanx':
-                        finalContent = renderQuanxFromIniTemplate(templateText, renderParams);
-                        break;
-                    case 'egern':
-                        finalContent = renderEgernFromIniTemplate(templateText, renderParams);
-                        contentType = 'application/x-yaml; charset=utf-8';
-                        break;
+                if (clashBaseTemplateUrl) {
+                    const baseTemplateText = await fetchTransformTemplate(
+                        storageAdapter,
+                        clashBaseTemplateUrl
+                    );
+                    finalContent = renderClashYamlWithIniOverlay(
+                        baseTemplateText,
+                        templateText,
+                        combinedNodeList,
+                        renderParams
+                    );
+                    contentType = 'application/x-yaml; charset=utf-8';
+                    headers['X-MiSub-Template-Mode'] = 'clash-yaml-ini-overlay';
+                } else {
+                    switch (targetFormat) {
+                        case 'clash':
+                            finalContent = renderClashFromIniTemplate(templateText, renderParams);
+                            contentType = 'application/x-yaml; charset=utf-8';
+                            break;
+                        case 'singbox':
+                        case 'sing-box':
+                            finalContent = renderSingboxFromIniTemplate(templateText, renderParams);
+                            contentType = 'application/json; charset=utf-8';
+                            break;
+                        case 'surge':
+                        case 'surge&ver=4':
+                            finalContent = renderSurgeFromIniTemplate(templateText, renderParams);
+                            break;
+                        case 'loon':
+                            finalContent = renderLoonFromIniTemplate(templateText, renderParams);
+                            break;
+                        case 'quanx':
+                            finalContent = renderQuanxFromIniTemplate(templateText, renderParams);
+                            break;
+                        case 'egern':
+                            finalContent = renderEgernFromIniTemplate(templateText, renderParams);
+                            contentType = 'application/x-yaml; charset=utf-8';
+                            break;
+                    }
                 }
             } else if (
                 templateText &&

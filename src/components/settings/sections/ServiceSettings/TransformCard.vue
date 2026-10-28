@@ -440,6 +440,27 @@
                     >
                         {{ t('settings.transformCustomTemplateSelectHint') }}
                     </p>
+                    <div
+                        class="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 dark:border-indigo-500/20 dark:bg-indigo-900/10"
+                    >
+                        <label
+                            for="clash-base-template-url"
+                            class="mb-1.5 block text-[11px] font-semibold text-indigo-700 dark:text-indigo-300"
+                        >
+                            {{ t('settings.clashBaseTemplateUrlLabel') }}
+                        </label>
+                        <input
+                            id="clash-base-template-url"
+                            v-model.trim="settings.clashBaseTemplateUrl"
+                            type="url"
+                            :disabled="isExternalEngine"
+                            :placeholder="t('settings.clashBaseTemplateUrlPlaceholder')"
+                            class="block w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs text-gray-900 shadow-xs focus:border-indigo-500 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-500/30 dark:bg-gray-800 dark:text-gray-100"
+                        />
+                        <p class="mt-2 text-[10px] leading-relaxed text-gray-600 dark:text-gray-400">
+                            {{ t('settings.clashBaseTemplateUrlHint') }}
+                        </p>
+                    </div>
                 </div>
             </div>
         </div>
