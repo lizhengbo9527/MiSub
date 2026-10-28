@@ -16,6 +16,7 @@ import {
 import { getBuiltinTemplate } from '../modules/subscription/builtin-template-registry.js';
 import { fetchTransformTemplate } from '../modules/subscription/transform-template-cache.js';
 import { resolveRuleTemplateSource } from '../modules/rule-template-handler.js';
+import { parseIniTemplate } from '../modules/subscription/template-parsers/ini-template-parser.js';
 import { base64EncodeUtf8 } from '../modules/utils.js';
 import yaml from 'js-yaml';
 import { urlsToClashProxies } from '../utils/url-to-clash.js';
@@ -136,20 +137,42 @@ export function renderClashYamlProfileTemplate(templateText, nodeList, options =
     );
 }
 
-function mergeNamedEntries(baseEntries, overlayEntries) {
+function mergeNamedEntries(baseEntries, overlayEntries, appendGroupNames = new Set()) {
     const merged = new Map();
     const unnamed = [];
 
-    for (const entry of [
-        ...(Array.isArray(baseEntries) ? baseEntries : []),
-        ...(Array.isArray(overlayEntries) ? overlayEntries : []),
-    ]) {
+    for (const entry of Array.isArray(baseEntries) ? baseEntries : []) {
         if (!entry || typeof entry !== 'object') continue;
         const name = String(entry.name || '').trim();
         if (!name) {
             unnamed.push(entry);
             continue;
         }
+        merged.set(name, entry);
+    }
+
+    for (const entry of Array.isArray(overlayEntries) ? overlayEntries : []) {
+        if (!entry || typeof entry !== 'object') continue;
+        const name = String(entry.name || '').trim();
+        if (!name) {
+            unnamed.push(entry);
+            continue;
+        }
+
+        if (appendGroupNames.has(name)) {
+            const existing = merged.get(name);
+            // Missing base groups are ignored, matching the extension script's appendGroups behavior.
+            if (!existing) continue;
+
+            const existingProxies = Array.isArray(existing.proxies) ? existing.proxies : [];
+            const additions = Array.isArray(entry.proxies) ? entry.proxies : [];
+            merged.set(name, {
+                ...existing,
+                proxies: Array.from(new Set([...existingProxies, ...additions])),
+            });
+            continue;
+        }
+
         merged.set(name, entry);
     }
 
@@ -252,10 +275,25 @@ export function renderClashYamlWithIniOverlay(
     }
 
     const baseConfig = yaml.load(baseTemplateText);
+    const iniModel = parseIniTemplate(iniTemplateText, {
+        ...options,
+        targetFormat: 'clash',
+    });
+    const explicitGroupNames = new Set(iniModel.groups.map((group) => group.name));
+    const appendGroupNames = new Set(
+        iniModel.groups
+            .filter((group) => group.mergeMode === 'append')
+            .map((group) => group.name)
+    );
+    const hasExplicitRules = iniModel.rules.length > 0;
+
+    // The base YAML owns its DNS and rules unless the INI explicitly defines rules.
+    // Disable automatic rule/group injection for the overlay pass.
     const overlayText = renderClashFromIniTemplate(iniTemplateText, {
         ...options,
         nodeList,
         targetFormat: 'clash',
+        ruleLevel: 'none',
     });
     const overlayConfig = yaml.load(overlayText);
 
@@ -263,11 +301,16 @@ export function renderClashYamlWithIniOverlay(
         throw new Error('INI 规则模板未能生成有效的 Clash 配置');
     }
 
-    const overlayGroups = Array.isArray(overlayConfig['proxy-groups'])
-        ? overlayConfig['proxy-groups']
-        : [];
-    const mergedGroups = mergeNamedEntries(baseConfig['proxy-groups'], overlayGroups);
-    const overlayRules = Array.isArray(overlayConfig.rules) ? overlayConfig.rules : [];
+    const overlayGroups = (
+        Array.isArray(overlayConfig['proxy-groups']) ? overlayConfig['proxy-groups'] : []
+    ).filter((group) => explicitGroupNames.has(group.name));
+    const mergedGroups = mergeNamedEntries(
+        baseConfig['proxy-groups'],
+        overlayGroups,
+        appendGroupNames
+    );
+    const overlayRules =
+        hasExplicitRules && Array.isArray(overlayConfig.rules) ? overlayConfig.rules : [];
     const mergedProxies = mergeClashProxyLists(
         baseConfig.proxies,
         overlayConfig.proxies,

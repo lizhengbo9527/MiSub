@@ -24,6 +24,13 @@ function parseIniSections(templateText) {
     return sections;
 }
 
+function parseOptionValue(rawValue) {
+    const value = String(rawValue ?? '').trim();
+    if (/^(true|false)$/i.test(value)) return value.toLowerCase() === 'true';
+    if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
+    return value;
+}
+
 function parseGroupLine(line) {
     const parts = line.split('=');
     if (parts.length < 2) return null;
@@ -39,18 +46,25 @@ function parseGroupLine(line) {
 
     const type = bodyParts[0];
     const members = [];
+    const filters = [];
     const options = {};
 
     for (const part of bodyParts.slice(1)) {
         if (part.includes('=')) {
             const [key, value] = part.split(/=(.*)/, 2);
-            options[key.trim()] = (value || '').trim();
+            const optionName = key.trim();
+            const optionValue = parseOptionValue(value || '');
+            if (optionName.toLowerCase() === 'filter') {
+                filters.push(String(optionValue));
+            } else {
+                options[optionName] = optionValue;
+            }
         } else {
             members.push(part);
         }
     }
 
-    return { name, type, members, options };
+    return { name, type, members, filters, options };
 }
 
 function parseRuleLine(line) {
@@ -193,10 +207,15 @@ export function parseIniTemplate(templateText, options = {}) {
         .map(parseChainProxyLine)
         .filter(Boolean);
 
+    const parsedAppendGroups = (sections.get('proxy group append') || [])
+        .map(parseGroupLine)
+        .filter(Boolean)
+        .map((group) => ({ ...group, mergeMode: 'append' }));
+
     const groups = (sections.get('proxy group') || [])
         .map(parseGroupLine)
         .filter(Boolean)
-        .concat(parsedAclGroups);
+        .concat(parsedAclGroups, parsedAppendGroups);
     const rules = (sections.get('rule') || [])
         .map(parseRuleLine)
         .filter(Boolean)
