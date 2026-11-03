@@ -752,13 +752,14 @@ export async function generateCombinedNodeList(
                     let text = new TextDecoder('utf-8').decode(buffer);
                     text = await decodeBase64Content(text);
 
-                    const parsedObjects = parseNodeList(text);
+                    const parseOptions = { plusAsSpace: Boolean(sub?.plusAsSpace) };
+                    const parsedObjects = parseNodeList(text, parseOptions);
                     let fallbackParsedObjects = parsedObjects;
                     if (parsedObjects.length === 0) {
                         const fallbackText = await decodeBase64Content(
                             encodeArrayBufferToBase64(buffer)
                         );
-                        const fallbackNodes = parseNodeList(fallbackText);
+                        const fallbackNodes = parseNodeList(fallbackText, parseOptions);
                         if (fallbackNodes.length > 0) {
                             fallbackParsedObjects = fallbackNodes;
                         }

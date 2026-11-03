@@ -146,7 +146,7 @@
                         :filtered-count="filteredNodes.length"
                         :total-count="allNodes.length"
                         @reset="resetFilters"
-                        @refresh="loadNodes"
+                        @refresh="() => loadNodes(true)"
                     />
 
                     <!-- 节点列表/卡片视图 -->

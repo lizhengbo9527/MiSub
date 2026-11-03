@@ -83,7 +83,7 @@
 
     const handleDelete = (id) => emit('delete', id);
     const handleEdit = (id) => emit('edit', id);
-    const handleUpdate = (id) => emit('updateNodeCount', id);
+    const handleUpdate = (id) => emit('updateNodeCount', id, false, true);
     const handlePreview = (id) => emit('preview', id);
     const handleQRCode = (id) => emit('qrcode', id);
     const handleAdd = () => emit('add');

@@ -137,7 +137,10 @@ export async function handleDirectUrlMode(
         {
             storage: storageAdapter,
             lockStorage: lockStorageAdapter,
-            subscription: { url: subscriptionUrl },
+            subscription: {
+                url: subscriptionUrl,
+                plusAsSpace: Boolean(plusAsSpace),
+            },
             forceRefresh,
         }
     );

@@ -16,8 +16,17 @@ const FAILURE_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
 const inFlightRefreshes = new Map();
 
-function hashSubscriptionUrl(url) {
-    const value = String(url || '').trim();
+function hashSubscriptionIdentity(subscription = {}) {
+    const url = typeof subscription.url === 'string' ? subscription.url.trim() : '';
+    const customUserAgent =
+        typeof subscription.customUserAgent === 'string'
+            ? subscription.customUserAgent.trim()
+            : '';
+    const fetchProxy =
+        typeof subscription.fetchProxy === 'string' ? subscription.fetchProxy.trim() : '';
+    const plusAsSpace = subscription.plusAsSpace === true ? '1' : '0';
+    const value = [url, customUserAgent, fetchProxy, plusAsSpace].join('\\0');
+
     let hashA = 0x811c9dc5;
     let hashB = 0x9e3779b9;
 
@@ -32,7 +41,7 @@ function hashSubscriptionUrl(url) {
 
 export function buildSubscriptionNodeCacheKey(subscription = {}) {
     const url = typeof subscription.url === 'string' ? subscription.url.trim() : '';
-    return url ? `${CACHE_KEY_PREFIX}${hashSubscriptionUrl(url)}` : '';
+    return url ? `${CACHE_KEY_PREFIX}${hashSubscriptionIdentity(subscription)}` : '';
 }
 
 function normalizeNodes(nodes) {
@@ -55,7 +64,7 @@ function normalizeMetadata(metadata = {}) {
 }
 
 function normalizeCacheEntry(entry, subscription) {
-    const urlHash = hashSubscriptionUrl(subscription?.url);
+    const urlHash = hashSubscriptionIdentity(subscription);
     if (
         !entry ||
         entry.version !== CACHE_VERSION ||
@@ -90,7 +99,7 @@ export async function readSubscriptionNodeCache(storage, subscription) {
 
 export async function saveSubscriptionNodeCache(storage, subscription, nodes, metadata = {}) {
     const key = buildSubscriptionNodeCacheKey(subscription);
-    const urlHash = hashSubscriptionUrl(subscription?.url);
+    const urlHash = hashSubscriptionIdentity(subscription);
     const validNodes = normalizeNodes(nodes);
     if (!key || !validNodes.length || typeof storage?.put !== 'function') return false;
 
@@ -104,16 +113,20 @@ export async function saveSubscriptionNodeCache(storage, subscription, nodes, me
         }
 
         const now = Date.now();
+        const updatedAt = Math.max(now, (Number(existing?.updatedAt) || 0) + 1);
         await storage.put(key, {
             version: CACHE_VERSION,
             urlHash,
             nodes: validNodes,
             nodeCount: validNodes.length,
-            updatedAt: now,
+            updatedAt,
             lastAttemptAt: now,
             failureCount: 0,
             retryAfter: 0,
-            metadata: normalizeMetadata(metadata),
+            metadata: {
+                ...(existing?.metadata || {}),
+                ...normalizeMetadata(metadata),
+            },
         });
         return true;
     } catch (error) {
@@ -125,12 +138,18 @@ export async function saveSubscriptionNodeCache(storage, subscription, nodes, me
 function getRetryAfterTimestamp(error, now) {
     const raw = error?.retryAfter;
     if (raw !== undefined && raw !== null && raw !== '') {
+        const minimumDelay =
+            Number(error?.status) === 429
+                ? 60 * 1000
+                : Number(error?.status) === 403
+                  ? 60 * 60 * 1000
+                  : 0;
         const seconds = Number(raw);
         if (Number.isFinite(seconds) && seconds >= 0) {
-            return now + seconds * 1000;
+            return now + Math.max(seconds * 1000, minimumDelay);
         }
         const date = Date.parse(String(raw));
-        if (Number.isFinite(date)) return Math.max(now, date);
+        if (Number.isFinite(date)) return Math.max(now + minimumDelay, date);
     }
 
     const failureCount = Math.max(1, Number(error?.failureCount) || 1);
@@ -151,7 +170,7 @@ function getRetryAfterTimestamp(error, now) {
     return now + backoff;
 }
 
-async function recordRefreshFailure(storage, subscription, cached, error) {
+export async function recordSubscriptionCacheFailure(storage, subscription, cached, error) {
     const key = buildSubscriptionNodeCacheKey(subscription);
     if (!key || typeof storage?.put !== 'function') return 0;
 
@@ -162,7 +181,7 @@ async function recordRefreshFailure(storage, subscription, cached, error) {
     try {
         await storage.put(key, {
             version: CACHE_VERSION,
-            urlHash: hashSubscriptionUrl(subscription?.url),
+            urlHash: hashSubscriptionIdentity(subscription),
             nodes: cached?.nodes || [],
             nodeCount: Number(cached?.nodeCount) || 0,
             updatedAt: Number(cached?.updatedAt) || 0,
@@ -285,6 +304,7 @@ export async function getOrFetchSubscriptionNodes({
     const refreshPromise = (async () => {
         let leaseToken = null;
         let leaseAcquired = false;
+        let leaseDenied = false;
         const leaseNow = Date.now();
 
         if (typeof lockStorage?.acquireSubscriptionCacheLease === 'function') {
@@ -320,8 +340,11 @@ export async function getOrFetchSubscriptionNodes({
                     if (!forceRefresh && Number(lease?.nextRefreshAt) > Date.now()) {
                         return createResult(latestCache, 'COOLDOWN', {
                             retryAfter: Number(lease.nextRefreshAt),
+                            error: '机场刷新处于退避期，请稍后重试',
                         });
                     }
+
+                    leaseDenied = true;
                 }
             } catch (error) {
                 if (error?.message?.includes('正在由其他请求刷新')) throw error;
@@ -330,6 +353,10 @@ export async function getOrFetchSubscriptionNodes({
                     error?.message || error
                 );
             }
+        }
+
+        if (leaseDenied) {
+            throw new Error('未能获取机场刷新租约，请稍后重试');
         }
 
         try {
@@ -376,24 +403,30 @@ export async function getOrFetchSubscriptionNodes({
                 throw error;
             }
 
-            const updated = await readSubscriptionNodeCache(storage, subscription);
             if (leaseAcquired) {
-                await lockStorage.completeSubscriptionCacheLease(
-                    key,
-                    leaseToken,
-                    Date.now() + DEFAULT_SUBSCRIPTION_CACHE_TTL_MS
-                );
+                try {
+                    await lockStorage.completeSubscriptionCacheLease(
+                        key,
+                        leaseToken,
+                        Date.now() + DEFAULT_SUBSCRIPTION_CACHE_TTL_MS
+                    );
+                } catch (leaseError) {
+                    console.warn(
+                        '[SubscriptionCache] Failed to complete refresh lease:',
+                        leaseError?.message || leaseError
+                    );
+                }
             }
 
             return {
-                nodes: updated?.nodes || fetchedNodes,
-                metadata: updated?.metadata || normalizeMetadata(fetched?.metadata),
-                nodeCount: updated?.nodeCount || fetchedNodes.length,
+                nodes: fetchedNodes,
+                metadata: normalizeMetadata(fetched?.metadata),
+                nodeCount: fetchedNodes.length,
                 fromCache: false,
                 cacheStatus: cached?.nodes?.length ? 'REFRESHED' : 'MISS',
             };
         } catch (error) {
-            const retryAfter = await recordRefreshFailure(storage, subscription, cached, error);
+            const retryAfter = await recordSubscriptionCacheFailure(storage, subscription, cached, error);
             if (leaseAcquired) {
                 try {
                     await lockStorage.completeSubscriptionCacheLease(key, leaseToken, retryAfter);
