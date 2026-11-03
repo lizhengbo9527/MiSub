@@ -1,23 +1,29 @@
 import { parseNodeList } from '../utils/node-parser.js';
 import { fetchWithRetry } from '../../services/fetch-utils.js';
 import { buildFetchProxyUrl } from '../../utils/fetch-proxy-utils.js';
+import { getOrFetchSubscriptionNodes } from '../../services/subscription-node-cache-service.js';
 import {
     filterNodeObjects,
     parseFilterRuleText,
     encodeArrayBufferToBase64,
 } from '../utils/node-cleaner.js';
 
+function parseUserInfoHeader(value) {
+    if (!value) return null;
+    const info = {};
+    value.split(';').forEach((part) => {
+        const [key, rawValue] = part.trim().split('=');
+        if (key && rawValue !== undefined) {
+            info[key] = /^\d+$/.test(rawValue) ? Number(rawValue) : rawValue;
+        }
+    });
+    return Object.keys(info).length ? info : null;
+}
+
 /**
- * 获取单个订阅的节点
- * @param {string} url - 订阅URL
- * @param {string} subscriptionName - 订阅名称
- * @param {string} userAgent - 用户代理
- * @param {string} customUserAgent - 自定义用户代理 (可选)
- * @param {boolean} debug - 是否启用调试日志
- * @param {string} excludeRules - 过滤规则文本
- * @param {boolean} skipCertVerify - 是否跳过 TLS 证书校验
- * @param {boolean} plusAsSpace - 是否将名称中的 + 视为空格
- * @returns {Promise<Object>} 节点获取结果
+ * 获取单个订阅的节点。
+ *
+ * cacheOptions.storage / cacheOptions.subscription 使预览入口与最终订阅共用单机场缓存。
  */
 export async function fetchSubscriptionNodes(
     url,
@@ -29,62 +35,85 @@ export async function fetchSubscriptionNodes(
     fetchProxy = null,
     skipCertVerify = false,
     plusAsSpace = false,
-    enableNodeCache = false
+    enableNodeCache = false,
+    cacheOptions = {}
 ) {
-    // 自动检测调试 Token
     const shouldDebug = debug || (url && url.includes('b0b422857bb46aba65da8234c84f38c6'));
 
     try {
         const effectiveUserAgent =
             customUserAgent && customUserAgent.trim() !== '' ? customUserAgent : userAgent;
 
-        // 当配置了 fetchProxy 时，使用代理拉取订阅
-        let requestUrl = url;
+        const fetchNodes = async () => {
+            let requestUrl = url;
 
-        // 只有开启保护性缓存节点时才加时间戳绕过强缓存 (如 Cloudflare Edge Cache)
-        if (enableNodeCache) {
-            try {
-                const parsedUrl = new URL(requestUrl);
-                parsedUrl.searchParams.set('_t', Date.now().toString());
-                requestUrl = parsedUrl.toString();
-            } catch (e) {
-                requestUrl += (requestUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
+            // 仅强制刷新时绕过机场/CDN 自身缓存。
+            if (cacheOptions.forceRefresh) {
+                try {
+                    const parsedUrl = new URL(requestUrl);
+                    parsedUrl.searchParams.set('_t', Date.now().toString());
+                    requestUrl = parsedUrl.toString();
+                } catch {
+                    requestUrl += (requestUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
+                }
             }
-        }
 
-        if (fetchProxy && typeof fetchProxy === 'string' && fetchProxy.trim()) {
-            requestUrl = buildFetchProxyUrl(fetchProxy, url, effectiveUserAgent);
-        }
+            if (fetchProxy && typeof fetchProxy === 'string' && fetchProxy.trim()) {
+                requestUrl = buildFetchProxyUrl(fetchProxy, requestUrl, effectiveUserAgent);
+            }
 
-        // 使用统一的 Fetch 工具，复用重试逻辑
-        const response = await fetchWithRetry(requestUrl, {
-            headers: { 'User-Agent': effectiveUserAgent },
-            redirect: 'follow',
-            ...(skipCertVerify ? { cf: { insecureSkipVerify: true } } : {}),
-        });
+            const response = await fetchWithRetry(requestUrl, {
+                headers: { 'User-Agent': effectiveUserAgent },
+                redirect: 'follow',
+                ...(skipCertVerify ? { cf: { insecureSkipVerify: true } } : {}),
+            });
 
-        if (!response.ok) {
+            if (!response.ok) {
+                const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
+                error.status = response.status;
+                error.retryAfter = response.headers.get('retry-after');
+                throw error;
+            }
+
+            const buffer = await response.arrayBuffer();
+            const text = new TextDecoder('utf-8').decode(buffer);
+
+            let parsedNodes = parseNodeList(text, { plusAsSpace });
+            if (parsedNodes.length === 0) {
+                const fallbackBase64 = encodeArrayBufferToBase64(buffer);
+                const fallbackNodes = parseNodeList(fallbackBase64, { plusAsSpace });
+                if (fallbackNodes.length > 0) parsedNodes = fallbackNodes;
+            }
+
             return {
-                subscriptionName,
-                url,
-                success: false,
-                nodes: [],
-                error: `HTTP ${response.status}: ${response.statusText}`,
+                nodes: parsedNodes.map((node) => node.url).filter(Boolean),
+                metadata: {
+                    userInfo: parseUserInfoHeader(response.headers.get('subscription-userinfo')),
+                },
+            };
+        };
+
+        let resolved;
+        if (cacheOptions.storage) {
+            resolved = await getOrFetchSubscriptionNodes({
+                storage: cacheOptions.storage,
+                lockStorage: cacheOptions.lockStorage || cacheOptions.storage,
+                subscription: cacheOptions.subscription || { url },
+                fetchNodes,
+                forceRefresh: cacheOptions.forceRefresh === true,
+                knownNodeCount: Number(cacheOptions.subscription?.nodeCount) || 0,
+            });
+        } else {
+            resolved = await fetchNodes();
+            resolved = {
+                ...resolved,
+                nodeCount: resolved.nodes.length,
+                fromCache: false,
+                cacheStatus: 'BYPASS',
             };
         }
 
-        const buffer = await response.arrayBuffer();
-        let text = new TextDecoder('utf-8').decode(buffer);
-
-        let parsedNodes = parseNodeList(text, { plusAsSpace });
-
-        if (parsedNodes.length === 0) {
-            const fallbackBase64 = encodeArrayBufferToBase64(buffer);
-            const fallbackNodes = parseNodeList(fallbackBase64, { plusAsSpace });
-            if (fallbackNodes.length > 0) {
-                parsedNodes = fallbackNodes;
-            }
-        }
+        let parsedNodes = parseNodeList((resolved.nodes || []).join('\n'), { plusAsSpace });
 
         if (excludeRules && excludeRules.trim()) {
             parsedNodes = applyExcludeRulesToNodes(parsedNodes, excludeRules);
@@ -95,18 +124,21 @@ export async function fetchSubscriptionNodes(
             url,
             success: true,
             nodes: parsedNodes,
-            error: null,
+            error: resolved.error || null,
+            cacheStatus: resolved.cacheStatus,
+            fromCache: resolved.fromCache,
+            userInfo: resolved.metadata?.userInfo || null,
         };
-    } catch (e) {
+    } catch (error) {
         if (shouldDebug) {
-            console.debug(`[DEBUG PREVIEW] Error: ${e.message}`);
+            console.debug(`[DEBUG PREVIEW] Error: ${error.message}`);
         }
         return {
             subscriptionName,
             url,
             success: false,
             nodes: [],
-            error: e.message,
+            error: error.message,
         };
     }
 }
@@ -122,7 +154,6 @@ function applyExcludeRulesToNodes(nodes, ruleText) {
 
     let resultNodes = nodes;
 
-    // 使用 node-cleaner 中导出的 filterNodeObjects
     if (includeRules.hasRules) {
         resultNodes = filterNodeObjects(resultNodes, includeRules, 'include');
     }

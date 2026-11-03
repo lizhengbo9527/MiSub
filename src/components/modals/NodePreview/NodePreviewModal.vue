@@ -241,7 +241,7 @@
     });
 
     // 加载节点数据
-    const loadNodes = async () => {
+    const loadNodes = async (forceRefresh = false) => {
         if (!props.show) return;
 
         loading.value = true;
@@ -250,6 +250,7 @@
         try {
             const requestData = {
                 userAgent: 'v2rayN/7.23',
+                ...(forceRefresh ? { forceRefresh: true } : {}),
             };
 
             if (props.profileId) {
@@ -833,7 +834,7 @@
                             </svg>
                             <p class="mt-4 text-sm text-red-600 dark:text-red-400">{{ error }}</p>
                             <button
-                                @click="loadNodes"
+                                @click="() => loadNodes(true)"
                                 class="mt-3 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700"
                             >
                                 {{ t('common.retry') }}

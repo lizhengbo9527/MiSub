@@ -102,7 +102,7 @@ export function useNodePreview(props) {
     });
 
     // 加载节点数据
-    const loadNodes = async () => {
+    const loadNodes = async (forceRefresh = false) => {
         if (!props.show) return;
 
         loading.value = true;
@@ -111,6 +111,7 @@ export function useNodePreview(props) {
         try {
             const requestData = {
                 userAgent: 'MiSub-Node-Preview/1.0',
+                ...(forceRefresh ? { forceRefresh: true } : {}),
             };
 
             if (props.profileId) {

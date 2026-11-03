@@ -15,6 +15,7 @@ import { parseNodeList } from '../utils/node-parser.js';
 import { getProcessedUserAgent } from '../../utils/format-utils.js';
 import { buildFetchProxyUrl } from '../../utils/fetch-proxy-utils.js';
 import { isSuspiciousNodeCountDrop } from '../../services/node-cache-service.js';
+import { saveSubscriptionNodeCache } from '../../services/subscription-node-cache-service.js';
 
 // 创建用于全局匹配的协议正则表达式
 const NODE_PROTOCOL_GLOBAL_REGEX = new RegExp(
@@ -98,6 +99,11 @@ export async function handleNodeCountRequest(request, env) {
             return createErrorResponse('Invalid or missing url', 400);
         }
 
+        const storageAdapter = StorageFactory.createAdapter(
+            env,
+            await StorageFactory.getStorageType(env)
+        );
+        const fetchedNodeUrls = [];
         const result = { count: 0, userInfo: null };
         let trafficRequestSucceeded = false;
         let nodeCountRequestSucceeded = false;
@@ -270,6 +276,9 @@ export async function handleNodeCountRequest(request, env) {
 
                     // 使用 parseNodeList 函数，与预览功能完全一致
                     const parsedNodes = parseNodeList(text, { plusAsSpace: Boolean(plusAsSpace) });
+                    fetchedNodeUrls.push(
+                        ...parsedNodes.map((node) => node.url).filter(Boolean)
+                    );
 
                     // [回退2] 如果响应头中也没有流量信息，尝试从 body 伪节点中解析
                     // 这在使用 FetchProxy（如 Vercel）时非常重要，因为代理会丢弃上游响应头
@@ -416,10 +425,6 @@ export async function handleNodeCountRequest(request, env) {
 
             // 只有在至少获取到一个有效信息时，才更新数据库
             if (result.count > 0) {
-                const storageAdapter = StorageFactory.createAdapter(
-                    env,
-                    await StorageFactory.getStorageType(env)
-                );
                 const originalSubs = (await storageAdapter.get('misub_subscriptions_v1')) || [];
                 const subToUpdate = originalSubs.find((s) => s.url === subUrl);
 
@@ -466,6 +471,16 @@ export async function handleNodeCountRequest(request, env) {
                             await storageAdapter.put('misub_subscriptions_v1', allSubs);
                         }
                     }
+                }
+
+                // 节点数刷新本身是显式上游拉取；将同一次响应的原始节点写入共享缓存。
+                if (fetchedNodeUrls.length === result.count) {
+                    await saveSubscriptionNodeCache(
+                        storageAdapter,
+                        { url: subUrl },
+                        fetchedNodeUrls,
+                        { userInfo: result.userInfo }
+                    );
                 }
             } else {
                 // 如果 count 为 0 且没有用户信息，但请求成功了（可能机场真的没节点），也要更新错误状态（可选，此处暂不作为错误）
@@ -588,6 +603,17 @@ export async function handleBatchUpdateNodesRequest(request, env) {
                     // 使用 parseNodeList 函数，与预览功能完全一致
                     const parsedNodes = parseNodeList(text);
                     nodeCount = parsedNodes.length;
+                    const nodeUrls = parsedNodes.map((node) => node.url).filter(Boolean);
+                    const knownNodeCount = Math.max(
+                        Number(subscription.lastGoodNodeCount) || 0,
+                        Number(subscription.nodeCount) || 0
+                    );
+                    if (
+                        nodeUrls.length > 0 &&
+                        !isSuspiciousNodeCountDrop(knownNodeCount, nodeUrls.length)
+                    ) {
+                        await saveSubscriptionNodeCache(storageAdapter, subscription, nodeUrls);
+                    }
                 } catch (e) {
                     // 解码失败，尝试简单统计
                     console.error('Batch update decode error:', e);

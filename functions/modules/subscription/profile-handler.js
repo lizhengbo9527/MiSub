@@ -104,12 +104,19 @@ export async function handleProfileMode(
     profileId,
     userAgent,
     applyTransform = false,
-    skipCertVerify = false
+    skipCertVerify = false,
+    forceRefresh = false
 ) {
     const storageAdapter = StorageFactory.createAdapter(
         env,
         await StorageFactory.getStorageType(env)
     );
+    const cacheLockAdapter =
+        storageAdapter?.acquireSubscriptionCacheLease
+            ? storageAdapter
+            : env?.MISUB_DB
+              ? StorageFactory.createAdapter(env, 'd1')
+              : storageAdapter;
 
     const profile =
         typeof storageAdapter.getProfileById === 'function'
@@ -194,7 +201,13 @@ export async function handleProfileMode(
                 sub.fetchProxy,
                 skipCertVerify,
                 Boolean(sub?.plusAsSpace),
-                sub?.enableNodeCache === true
+                true,
+                {
+                    storage: storageAdapter,
+                    lockStorage: cacheLockAdapter,
+                    subscription: sub,
+                    forceRefresh,
+                }
             )
         )
     );

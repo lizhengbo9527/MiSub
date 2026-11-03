@@ -7,7 +7,28 @@ import {
 } from '../../functions/services/subscription-service.js';
 
 function createMemoryStorage(initial = {}) {
-    const store = new Map(Object.entries(initial));
+    const prefix = 'node_cache_subscription_url_';
+    const entries = Object.entries(initial).map(([key, value]) => {
+        if (key.startsWith(prefix) && value && Array.isArray(value.nodes)) {
+            return [
+                key,
+                {
+                    ...value,
+                    version: 2,
+                    urlHash: key.slice(prefix.length),
+                    updatedAt:
+                        Number(value.updatedAt) ||
+                        Date.parse(value.updatedAt) ||
+                        Date.now() - 7 * 60 * 60 * 1000,
+                    retryAfter: 0,
+                    failureCount: 0,
+                    metadata: value.metadata || {},
+                },
+            ];
+        }
+        return [key, value];
+    });
+    const store = new Map(entries);
     return {
         store,
         async get(key) {
@@ -55,7 +76,7 @@ describe('subscription protective node cache', () => {
         expect(parseSubscriptionUserInfoHeader('')).toBeNull();
     });
 
-    it('enableNodeCache 开启时，成功拉取真实节点后写入单机场缓存', async () => {
+    it('首次拉取真实节点后写入按订阅 URL 共享的机场缓存', async () => {
         const storage = createMemoryStorage();
         vi.stubGlobal(
             'fetch',
@@ -88,7 +109,7 @@ describe('subscription protective node cache', () => {
         expect(cache.nodeCount).toBe(1);
     });
 
-    it('enableNodeCache 开启且拉取失败时，使用该机场上次成功缓存', async () => {
+    it('机场拉取失败时，使用该机场上次成功缓存', async () => {
         const storage = createMemoryStorage({
             [buildSubscriptionNodeCacheKey({ id: 'sub-a', url: 'https://example.com/sub' })]: {
                 nodes: ['trojan://cached@example.com:443#Cached'],
@@ -122,7 +143,7 @@ describe('subscription protective node cache', () => {
         expect(result.trim()).toBe('trojan://cached@example.com:443#Cached');
     });
 
-    it('enableNodeCache 开启时，新结果只有伪节点不得覆盖旧缓存，并 fallback 旧缓存', async () => {
+    it('新结果只有伪节点不得覆盖旧缓存，并 fallback 旧缓存', async () => {
         const cacheKey = buildSubscriptionNodeCacheKey({
             id: 'sub-a',
             url: 'https://example.com/sub',
@@ -261,7 +282,7 @@ describe('subscription protective node cache', () => {
         expect(updatedSub.lastGoodNodeCount).toBe(12);
     });
 
-    it('enableNodeCache 关闭时，拉取失败不使用旧缓存', async () => {
+    it('旧 enableNodeCache=false 配置不再关闭统一机场缓存', async () => {
         const storage = createMemoryStorage({
             [buildSubscriptionNodeCacheKey({ id: 'sub-a', url: 'https://example.com/sub' })]: {
                 nodes: ['trojan://cached@example.com:443#Cached'],
@@ -292,10 +313,10 @@ describe('subscription protective node cache', () => {
             false
         );
 
-        expect(result.trim()).toBe('');
+        expect(result.trim()).toBe('trojan://cached@example.com:443#Cached');
     });
 
-    it('enableNodeCache 开启时，异常缩水回退到机场旧缓存', async () => {
+    it('异常缩水回退到机场旧缓存', async () => {
         const cacheKey = buildSubscriptionNodeCacheKey({
             id: 'sub-a',
             url: 'https://example.com/sub',
@@ -431,7 +452,7 @@ describe('subscription protective node cache', () => {
         expect(updated.lastGoodNodeCount).toBe(156);
     });
 
-    it('clears stored runtime info when protective node cache is disabled and external fetch fails', async () => {
+    it('上游拉取失败时保留上一次成功的订阅运行信息', async () => {
         const sub = {
             id: 'sub-a',
             name: 'Airport A',
@@ -465,18 +486,11 @@ describe('subscription protective node cache', () => {
         );
 
         expect(result.trim()).toBe('');
-        expect(context.currentSubscriptionRuntimeInfo[sub.id]).toEqual({
-            nodeCount: 0,
-            userInfo: null,
-        });
-        expect(waitUntilPromises).toHaveLength(1);
-
-        await Promise.all(waitUntilPromises);
+        expect(context.currentSubscriptionRuntimeInfo?.[sub.id]).toBeUndefined();
+        expect(waitUntilPromises).toHaveLength(0);
 
         const [updatedSub] = await storage.get('misub_subscriptions_v1');
-        expect(updatedSub.nodeCount).toBe(0);
-        expect(updatedSub.userInfo).toBeNull();
-        expect(updatedSub.lastError).toBeNull();
-        expect(typeof updatedSub.lastUpdate).toBe('string');
+        expect(updatedSub.nodeCount).toBe(86);
+        expect(updatedSub.userInfo).toEqual(sub.userInfo);
     });
 });

@@ -25,3 +25,10 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_updated_at ON subscriptions(updated_at);
 CREATE INDEX IF NOT EXISTS idx_profiles_updated_at ON profiles(updated_at);
 CREATE INDEX IF NOT EXISTS idx_settings_updated_at ON settings(updated_at);
+
+CREATE TABLE IF NOT EXISTS subscription_cache_locks (
+    cache_key TEXT PRIMARY KEY,
+    token TEXT,
+    lease_until INTEGER NOT NULL DEFAULT 0,
+    next_refresh_at INTEGER NOT NULL DEFAULT 0
+);

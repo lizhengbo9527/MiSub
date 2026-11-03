@@ -559,6 +559,12 @@ export async function handleMisubRequest(context) {
         await StorageFactory.getStorageType(env)
     );
     context.storage = storageAdapter;
+    context.subscriptionCacheLockAdapter =
+        storageAdapter?.acquireSubscriptionCacheLease
+            ? storageAdapter
+            : env?.MISUB_DB
+              ? StorageFactory.createAdapter(env, 'd1')
+              : storageAdapter;
     const [settingsData, allMisubs, allProfiles] = await Promise.all([
         storageAdapter.get(KV_KEY_SETTINGS),
         storageAdapter.getAllSubscriptions(),
@@ -1008,7 +1014,10 @@ export async function handleMisubRequest(context) {
                 ...generationSettings,
                 // [强制透传] 确保 ruleLevel 在订阅组内能够生效
                 ruleLevel: ruleLevel || generationSettings.ruleLevel,
-            }
+            },
+            false,
+            false,
+            forceRefresh
         );
         const sourceNames = targetMisubs
             .filter((s) => typeof s?.url === 'string' && s.url.startsWith('http'))
@@ -1016,7 +1025,11 @@ export async function handleMisubRequest(context) {
         // 仅在至少一个订阅源真正从远程拉取成功时才刷新缓存时间
         // 如果没有 HTTP 订阅源（纯手动节点/过期订阅组），则始终写入缓存
         const stats = context.generationStats;
-        if (!stats?.sourceCount || stats.upstreamSuccessCount > 0) {
+        if (
+            !stats?.sourceCount ||
+            stats.upstreamSuccessCount > 0 ||
+            stats.sourceCacheHitCount > 0
+        ) {
             const cacheSaved = await setCache(storageAdapter, cacheKey, freshNodes, sourceNames);
             const freshNodeCount = freshNodes.split('\n').filter((line) => line.trim()).length;
             const existingCache = cacheSaved ? null : await storageAdapter.get(cacheKey);
