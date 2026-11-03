@@ -118,7 +118,7 @@
                         @update:search-query="(val) => (searchQuery = val)"
                         @update:view-mode="updateViewMode"
                         @reset="resetFilters"
-                        @refresh="loadNodes"
+                        @refresh="() => loadNodes(true)"
                     />
 
                     <!-- 加载状态 -->
@@ -132,7 +132,7 @@
                             </div>
                             <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">{{ error }}</p>
                             <button
-                                @click="loadNodes"
+                                @click="() => loadNodes(true)"
                                 class="mt-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm misub-radius-md transition-colors"
                             >
                                 {{ t('common.retry') }}

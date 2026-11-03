@@ -18,12 +18,19 @@ export async function handleSingleSubscriptionMode(
     env,
     subscriptionId,
     userAgent,
-    skipCertVerify = false
+    skipCertVerify = false,
+    forceRefresh = false
 ) {
     const storageAdapter = StorageFactory.createAdapter(
         env,
         await StorageFactory.getStorageType(env)
     );
+    const cacheLockAdapter =
+        storageAdapter?.acquireSubscriptionCacheLease
+            ? storageAdapter
+            : env?.MISUB_DB
+              ? StorageFactory.createAdapter(env, 'd1')
+              : storageAdapter;
 
     // 查找订阅
     const subscription =
@@ -78,7 +85,13 @@ export async function handleSingleSubscriptionMode(
         subscription.fetchProxy,
         skipCertVerify,
         Boolean(subscription?.plusAsSpace),
-        subscription?.enableNodeCache === true
+        true,
+        {
+            storage: storageAdapter,
+            lockStorage: cacheLockAdapter,
+            subscription,
+            forceRefresh,
+        }
     );
 
     return {
@@ -104,7 +117,10 @@ export async function handleDirectUrlMode(
     subscriptionUrl,
     userAgent,
     skipCertVerify = false,
-    plusAsSpace = false
+    plusAsSpace = false,
+    storageAdapter = null,
+    forceRefresh = false,
+    lockStorageAdapter = storageAdapter
 ) {
     const debug = subscriptionUrl.includes('b0b422857bb46aba65da8234c84f38c6');
     const result = await fetchSubscriptionNodes(
@@ -116,7 +132,14 @@ export async function handleDirectUrlMode(
         '',
         null,
         skipCertVerify,
-        plusAsSpace
+        plusAsSpace,
+        true,
+        {
+            storage: storageAdapter,
+            lockStorage: lockStorageAdapter,
+            subscription: { url: subscriptionUrl },
+            forceRefresh,
+        }
     );
 
     return {

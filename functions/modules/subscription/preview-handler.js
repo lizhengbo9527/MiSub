@@ -38,7 +38,11 @@ export async function handlePublicPreviewRequest(request, env) {
 
     try {
         const requestData = await readJsonWithLimit(request, JSON_BODY_LIMITS.normal);
-        const { profileId, userAgent = 'MiSub-Public-Preview/1.0' } = requestData;
+        const {
+            profileId,
+            userAgent = 'MiSub-Public-Preview/1.0',
+            forceRefresh = false,
+        } = requestData;
 
         if (!profileId) {
             return createJsonResponse({ error: 'Missing profile ID' }, 400);
@@ -75,7 +79,8 @@ export async function handlePublicPreviewRequest(request, env) {
             profile.id,
             userAgent,
             true,
-            shouldSkipCertificateVerify
+            shouldSkipCertificateVerify,
+            forceRefresh === true
         );
 
         return createJsonResponse(result);
@@ -105,6 +110,7 @@ export async function handleSubscriptionNodesRequest(request, env) {
             applyTransform = false, // 管理后台默认不应用转换，由前端控制
             skipCertVerify = false,
             plusAsSpace = false,
+            forceRefresh = false,
         } = requestData;
 
         // 验证必需参数
@@ -131,7 +137,8 @@ export async function handleSubscriptionNodesRequest(request, env) {
                     profileId,
                     userAgent,
                     requestData.applyTransform !== undefined ? requestData.applyTransform : true,
-                    skipCertVerify
+                    skipCertVerify,
+                    forceRefresh === true
                 );
                 break;
             case 'subscription':
@@ -140,16 +147,32 @@ export async function handleSubscriptionNodesRequest(request, env) {
                     env,
                     subscriptionId,
                     userAgent,
-                    skipCertVerify
+                    skipCertVerify,
+                    forceRefresh === true
                 );
                 break;
             case 'direct':
-                result = await handleDirectUrlMode(
-                    subscriptionUrl,
-                    userAgent,
-                    skipCertVerify,
-                    plusAsSpace
-                );
+                {
+                    const storageAdapter = StorageFactory.createAdapter(
+                        env,
+                        await StorageFactory.getStorageType(env)
+                    );
+                    const cacheLockAdapter =
+                        storageAdapter?.acquireSubscriptionCacheLease
+                            ? storageAdapter
+                            : env?.MISUB_DB
+                              ? StorageFactory.createAdapter(env, 'd1')
+                              : storageAdapter;
+                    result = await handleDirectUrlMode(
+                        subscriptionUrl,
+                        userAgent,
+                        skipCertVerify,
+                        plusAsSpace,
+                        storageAdapter,
+                        forceRefresh === true,
+                        cacheLockAdapter
+                    );
+                }
                 break;
             default:
                 return createJsonResponse(

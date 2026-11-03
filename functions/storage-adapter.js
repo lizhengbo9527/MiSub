@@ -96,6 +96,21 @@ async function ensureD1Schema(d1Db) {
     }
 }
 
+const subscriptionCacheLockSchemas = new WeakSet();
+
+async function ensureSubscriptionCacheLockSchema(d1Db) {
+    if (subscriptionCacheLockSchemas.has(d1Db)) return;
+    await d1Db.prepare(`
+        CREATE TABLE IF NOT EXISTS subscription_cache_locks (
+            cache_key TEXT PRIMARY KEY,
+            token TEXT,
+            lease_until INTEGER NOT NULL DEFAULT 0,
+            next_refresh_at INTEGER NOT NULL DEFAULT 0
+        )
+    `).run();
+    subscriptionCacheLockSchemas.add(d1Db);
+}
+
 /**
  * KV 存储适配器
  */
@@ -326,6 +341,63 @@ class D1StorageAdapter {
             console.error(`[D1] Failed to delete key ${key}:`, error);
             throw error;
         }
+    }
+
+    async acquireSubscriptionCacheLease(cacheKey, token, leaseUntil, now, forceRefresh = false) {
+        await ensureSubscriptionCacheLockSchema(this.db);
+
+        const result = await this.db
+            .prepare(`
+                INSERT INTO subscription_cache_locks
+                    (cache_key, token, lease_until, next_refresh_at)
+                VALUES (?, ?, ?, 0)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    token = excluded.token,
+                    lease_until = excluded.lease_until
+                WHERE subscription_cache_locks.lease_until <= ?
+                  AND (? = 1 OR subscription_cache_locks.next_refresh_at <= ?)
+            `)
+            .bind(cacheKey, token, leaseUntil, now, forceRefresh ? 1 : 0, now)
+            .run();
+
+        const current = await this.db
+            .prepare(
+                'SELECT token, lease_until, next_refresh_at FROM subscription_cache_locks WHERE cache_key = ?'
+            )
+            .bind(cacheKey)
+            .first();
+
+        return {
+            acquired: Number(result?.meta?.changes) > 0 && current?.token === token,
+            leaseUntil: Number(current?.lease_until) || 0,
+            nextRefreshAt: Number(current?.next_refresh_at) || 0,
+        };
+    }
+
+    async completeSubscriptionCacheLease(cacheKey, token, nextRefreshAt) {
+        await ensureSubscriptionCacheLockSchema(this.db);
+        await this.db
+            .prepare(`
+                UPDATE subscription_cache_locks
+                SET token = NULL, lease_until = 0, next_refresh_at = ?
+                WHERE cache_key = ? AND token = ?
+            `)
+            .bind(nextRefreshAt, cacheKey, token)
+            .run();
+        return true;
+    }
+
+    async releaseSubscriptionCacheLease(cacheKey, token) {
+        await ensureSubscriptionCacheLockSchema(this.db);
+        await this.db
+            .prepare(`
+                UPDATE subscription_cache_locks
+                SET token = NULL, lease_until = 0
+                WHERE cache_key = ? AND token = ?
+            `)
+            .bind(cacheKey, token)
+            .run();
+        return true;
     }
 
     async list(prefix) {
@@ -622,7 +694,10 @@ class D1StorageAdapter {
         } else if (key === DATA_KEYS.SETTINGS) {
             return { table: 'settings', queryField: 'key', queryValue: 'main' };
         } else {
-            if (String(key).startsWith(DATA_KEYS.PROFILE_DOWNLOAD_COUNT_PREFIX)) {
+            if (
+                String(key).startsWith(DATA_KEYS.PROFILE_DOWNLOAD_COUNT_PREFIX) ||
+                String(key).startsWith('node_cache_')
+            ) {
                 return { table: 'settings', queryField: 'key', queryValue: key };
             }
             if (String(key).startsWith('tmp_external_nodes:')) {

@@ -468,7 +468,7 @@ export async function handleMisubsSave(request, env) {
         // 步骤6.5: 清除节点缓存（订阅变动后确保拉取最新数据）
         try {
             const preserveKeys = (Array.isArray(finalMisubs) ? finalMisubs : [])
-                .filter((sub) => sub?.enableNodeCache === true)
+                .filter((sub) => typeof sub?.url === 'string' && /^https?:\/\//i.test(sub.url))
                 .map((sub) => buildSubscriptionNodeCacheKey(sub));
             const cacheResult = await clearAllNodeCaches(storageAdapter, { preserveKeys });
             console.info(
