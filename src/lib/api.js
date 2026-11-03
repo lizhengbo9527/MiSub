@@ -136,7 +136,13 @@ export async function saveMisubs(misubs, profiles) {
     }
 }
 
-export async function fetchNodeCount(subUrl, fetchProxy = '', plusAsSpace = false, userAgent = '') {
+export async function fetchNodeCount(
+    subUrl,
+    fetchProxy = '',
+    plusAsSpace = false,
+    userAgent = '',
+    forceRefresh = false
+) {
     let timeoutId;
     try {
         const controller = new AbortController();
@@ -151,6 +157,9 @@ export async function fetchNodeCount(subUrl, fetchProxy = '', plusAsSpace = fals
         }
         if (userAgent) {
             payload.userAgent = userAgent;
+        }
+        if (forceRefresh) {
+            payload.forceRefresh = true;
         }
 
         const data = await api.post('/api/node_count', payload, { signal: controller.signal });

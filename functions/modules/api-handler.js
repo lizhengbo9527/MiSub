@@ -470,7 +470,16 @@ export async function handleMisubsSave(request, env) {
             const preserveKeys = (Array.isArray(finalMisubs) ? finalMisubs : [])
                 .filter((sub) => typeof sub?.url === 'string' && /^https?:\/\//i.test(sub.url))
                 .map((sub) => buildSubscriptionNodeCacheKey(sub));
-            const cacheResult = await clearAllNodeCaches(storageAdapter, { preserveKeys });
+            const cacheLockAdapter =
+                storageAdapter?.deleteSubscriptionCacheLease
+                    ? storageAdapter
+                    : env?.MISUB_DB
+                      ? StorageFactory.createAdapter(env, 'd1')
+                      : storageAdapter;
+            const cacheResult = await clearAllNodeCaches(storageAdapter, {
+                preserveKeys,
+                lockStorage: cacheLockAdapter,
+            });
             console.info(
                 `[API] Cleared ${cacheResult.cleared} node caches after subscription update, preserved ${cacheResult.skipped || 0}`
             );

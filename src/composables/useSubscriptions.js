@@ -115,7 +115,7 @@ export function useSubscriptions(markDirty) {
         subsCurrentPage.value = page;
     }
 
-    async function handleUpdateNodeCount(subId, isInitialLoad = false) {
+    async function handleUpdateNodeCount(subId, isInitialLoad = false, forceRefresh = false) {
         // Find in the filtered list
         const subToUpdate = subscriptions.value.find((s) => s.id === subId);
         if (!subToUpdate) return false;
@@ -149,7 +149,8 @@ export function useSubscriptions(markDirty) {
                 subToUpdate.url,
                 subToUpdate.fetchProxy,
                 Boolean(subToUpdate.plusAsSpace),
-                subToUpdate.customUserAgent
+                subToUpdate.customUserAgent,
+                forceRefresh
             );
 
             // 清除超时保护
@@ -204,6 +205,7 @@ export function useSubscriptions(markDirty) {
             const data = result.data.data || result.data; // 兼容后端返回结构
             subToUpdate.nodeCount = data.count || 0;
             subToUpdate.userInfo = data.userInfo || null;
+            subToUpdate.lastUpdate = data.lastUpdated || subToUpdate.lastUpdate || null;
             subToUpdate.lastError = null; // 成功后清除错误状态
 
             if (!isInitialLoad) {
@@ -366,25 +368,11 @@ export function useSubscriptions(markDirty) {
 
                     if (updateResult.success) {
                         sub.nodeCount = updateResult.nodeCount || 0;
+                        sub.userInfo = updateResult.userInfo || sub.userInfo || null;
+                        sub.lastUpdate = updateResult.lastUpdated || new Date().toISOString();
                         successCount++;
                     }
                 });
-
-                for (const sub of subsToUpdate) {
-                    try {
-                        const result = await fetchNodeCount(sub.url);
-                        if (result.success && result.data.userInfo) {
-                            sub.userInfo = result.data.userInfo;
-                        }
-                    } catch (error) {
-                        if (isDev) {
-                            console.debug(
-                                '[Subscriptions] Failed to fetch node info during batch update:',
-                                error
-                            );
-                        }
-                    }
-                }
 
                 const failedCount = subsToUpdate.length - successCount;
                 refreshError.value = failedCount > 0;

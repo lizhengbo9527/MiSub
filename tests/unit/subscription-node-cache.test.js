@@ -29,6 +29,25 @@ describe('subscription-node-cache-service', () => {
         );
     });
 
+    it('separates cache variants when upstream request semantics differ', () => {
+        const base = {
+            url: 'https://airport.example.com/sub',
+            customUserAgent: '',
+            fetchProxy: '',
+            plusAsSpace: false,
+        };
+
+        expect(buildSubscriptionNodeCacheKey(base)).not.toBe(
+            buildSubscriptionNodeCacheKey({ ...base, customUserAgent: 'custom-agent' })
+        );
+        expect(buildSubscriptionNodeCacheKey(base)).not.toBe(
+            buildSubscriptionNodeCacheKey({ ...base, fetchProxy: 'https://proxy.example.com' })
+        );
+        expect(buildSubscriptionNodeCacheKey(base)).not.toBe(
+            buildSubscriptionNodeCacheKey({ ...base, plusAsSpace: true })
+        );
+    });
+
     it('reuses a successful airport refresh for the next six hours', async () => {
         const storage = createMemoryStorage();
         const subscription = { id: 'sub-a', url: 'https://airport.example.com/sub' };
@@ -174,7 +193,7 @@ describe('subscription-node-cache-service', () => {
             fetchNodes,
         });
 
-        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
         resolveFetch({ nodes: ['trojan://shared@example.com:443#Shared'] });
         const [first, second] = await Promise.all([firstPromise, secondPromise]);
 

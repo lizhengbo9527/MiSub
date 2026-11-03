@@ -15,7 +15,13 @@ import { parseNodeList } from '../utils/node-parser.js';
 import { getProcessedUserAgent } from '../../utils/format-utils.js';
 import { buildFetchProxyUrl } from '../../utils/fetch-proxy-utils.js';
 import { isSuspiciousNodeCountDrop } from '../../services/node-cache-service.js';
-import { saveSubscriptionNodeCache } from '../../services/subscription-node-cache-service.js';
+import {
+    DEFAULT_SUBSCRIPTION_CACHE_TTL_MS,
+    buildSubscriptionNodeCacheKey,
+    readSubscriptionNodeCache,
+    recordSubscriptionCacheFailure,
+    saveSubscriptionNodeCache,
+} from '../../services/subscription-node-cache-service.js';
 
 // 创建用于全局匹配的协议正则表达式
 const NODE_PROTOCOL_GLOBAL_REGEX = new RegExp(
@@ -83,7 +89,273 @@ async function resolveNodeCountFetchCfOptions(env) {
  * @param {Object} env - Cloudflare环境对象
  * @returns {Promise<Response>} HTTP响应
  */
+const nodeCountRefreshes = new Map();
+
+function createNodeCountCacheResponse(entry, cacheStatus, warning = null) {
+    return createJsonResponse({
+        success: true,
+        data: {
+            count: Number(entry?.nodeCount) || 0,
+            userInfo: entry?.metadata?.userInfo || null,
+            lastUpdated: entry?.updatedAt
+                ? new Date(Number(entry.updatedAt)).toISOString()
+                : null,
+        },
+        cacheStatus,
+        ...(warning ? { warning } : {}),
+    });
+}
+
+/**
+ * 节点数刷新入口也服从单机场缓存，避免页面初始化、定时任务和手动更新
+ * 在短时间内反复触发同一机场的上游请求。
+ */
 export async function handleNodeCountRequest(request, env) {
+    if (request.method !== 'POST') {
+        return createErrorResponse('Method Not Allowed', 405);
+    }
+
+    try {
+        const internalRequest = request.clone();
+        const requestData = await readJsonWithLimit(request, JSON_BODY_LIMITS.normal);
+        const subUrl = requestData?.url;
+        const forceRefresh = requestData?.forceRefresh === true;
+
+        if (!subUrl || typeof subUrl !== 'string' || !/^https?:\/\//i.test(subUrl)) {
+            return createErrorResponse('Invalid or missing url', 400);
+        }
+
+        const storageAdapter = StorageFactory.createAdapter(
+            env,
+            await StorageFactory.getStorageType(env)
+        );
+        const lockStorageAdapter =
+            storageAdapter?.acquireSubscriptionCacheLease
+                ? storageAdapter
+                : env?.MISUB_DB
+                  ? StorageFactory.createAdapter(env, 'd1')
+                  : storageAdapter;
+        const subscription = {
+            url: subUrl,
+            fetchProxy: requestData.fetchProxy || '',
+            customUserAgent: requestData.userAgent || '',
+            plusAsSpace: requestData.plusAsSpace === true,
+        };
+        const cacheKey = buildSubscriptionNodeCacheKey(subscription);
+        const cached = await readSubscriptionNodeCache(storageAdapter, subscription);
+        const now = Date.now();
+
+        if (
+            !forceRefresh &&
+            cached?.nodes?.length &&
+            now - cached.updatedAt < DEFAULT_SUBSCRIPTION_CACHE_TTL_MS
+        ) {
+            return createNodeCountCacheResponse(cached, 'HIT');
+        }
+
+        if (!forceRefresh && cached?.retryAfter > now) {
+            if (cached.nodes?.length) {
+                return createNodeCountCacheResponse(
+                    cached,
+                    'COOLDOWN',
+                    cached.lastError?.message || '机场刷新处于退避期，暂时使用上次成功结果'
+                );
+            }
+            return createJsonResponse(
+                {
+                    success: false,
+                    error: cached.lastError?.message || '机场刷新处于退避期，请稍后重试',
+                    retryAfter: cached.retryAfter,
+                },
+                429
+            );
+        }
+
+        const existingPromise = nodeCountRefreshes.get(cacheKey);
+        if (existingPromise) return await existingPromise;
+
+        const refreshPromise = (async () => {
+            let leaseToken = null;
+            let leaseAcquired = false;
+
+            if (typeof lockStorageAdapter?.acquireSubscriptionCacheLease === 'function') {
+                try {
+                    leaseToken =
+                        typeof globalThis.crypto?.randomUUID === 'function'
+                            ? globalThis.crypto.randomUUID()
+                            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const lease = await lockStorageAdapter.acquireSubscriptionCacheLease(
+                        cacheKey,
+                        leaseToken,
+                        Date.now() + 2 * 60 * 1000,
+                        Date.now(),
+                        forceRefresh
+                    );
+                    leaseAcquired = Boolean(lease?.acquired);
+
+                    if (!leaseAcquired) {
+                        const latest = await readSubscriptionNodeCache(
+                            storageAdapter,
+                            subscription
+                        );
+                        if (latest?.nodes?.length) {
+                            return createNodeCountCacheResponse(
+                                latest,
+                                Number(lease?.leaseUntil) > Date.now() ? 'REFRESHING' : 'COOLDOWN'
+                            );
+                        }
+                        if (!forceRefresh && Number(lease?.nextRefreshAt) > Date.now()) {
+                            return createJsonResponse(
+                                {
+                                    success: false,
+                                    error: '机场刷新处于退避期，请稍后重试',
+                                    retryAfter: Number(lease.nextRefreshAt),
+                                },
+                                429
+                            );
+                        }
+                        return createJsonResponse(
+                            { success: false, error: '该机场正在刷新，请稍后重试' },
+                            503
+                        );
+                    }
+                } catch (leaseError) {
+                    console.warn(
+                        '[NodeHandler] Distributed node-count refresh lease unavailable:',
+                        leaseError?.message || leaseError
+                    );
+                }
+            }
+
+            try {
+                const response = await handleNodeCountRequestUncached(internalRequest, env);
+                let payload = null;
+                try {
+                    payload = await response.clone().json();
+                } catch {
+                    // Keep the original response if it is not JSON.
+                }
+
+                const updatedCache = await readSubscriptionNodeCache(
+                    storageAdapter,
+                    subscription
+                );
+                const cacheUpdated = Boolean(
+                    updatedCache?.nodes?.length &&
+                    updatedCache.updatedAt > (cached?.updatedAt || 0)
+                );
+                const protectedResult = payload?.data?.protected === true;
+                const failedResult = !response.ok || payload?.success === false;
+                const positiveCountWithoutCache =
+                    Number(payload?.data?.count) > 0 && !cacheUpdated;
+                const emptyCountWithoutCache =
+                    payload?.success === true &&
+                    Number(payload?.data?.count) === 0 &&
+                    !cacheUpdated;
+
+                if (
+                    failedResult ||
+                    protectedResult ||
+                    positiveCountWithoutCache ||
+                    emptyCountWithoutCache
+                ) {
+                    const error = new Error(
+                        payload?.error ||
+                            (protectedResult
+                                ? '机场节点数量异常缩水，保留上次成功缓存'
+                                : '机场刷新未能生成完整节点缓存')
+                    );
+                    error.status = Number(payload?.status) || response.status || 0;
+                    error.retryAfter = payload?.retryAfter || response.headers.get('retry-after');
+                    if (protectedResult) error.code = 'SUSPICIOUS_NODE_COUNT_DROP';
+                    const retryAfter = await recordSubscriptionCacheFailure(
+                        storageAdapter,
+                        subscription,
+                        cached,
+                        error
+                    );
+                    if (
+                        leaseAcquired &&
+                        typeof lockStorageAdapter?.completeSubscriptionCacheLease === 'function'
+                    ) {
+                        await lockStorageAdapter.completeSubscriptionCacheLease(
+                            cacheKey,
+                            leaseToken,
+                            retryAfter
+                        );
+                    }
+
+                    if (cached?.nodes?.length) {
+                        return createNodeCountCacheResponse(cached, 'STALE', error.message);
+                    }
+                } else if (
+                    leaseAcquired &&
+                    typeof lockStorageAdapter?.completeSubscriptionCacheLease === 'function'
+                ) {
+                    await lockStorageAdapter.completeSubscriptionCacheLease(
+                        cacheKey,
+                        leaseToken,
+                        Date.now() + DEFAULT_SUBSCRIPTION_CACHE_TTL_MS
+                    );
+                }
+
+                return response;
+            } catch (error) {
+                const retryAfter = await recordSubscriptionCacheFailure(
+                    storageAdapter,
+                    subscription,
+                    cached,
+                    error
+                );
+                if (
+                    leaseAcquired &&
+                    typeof lockStorageAdapter?.completeSubscriptionCacheLease === 'function'
+                ) {
+                    await lockStorageAdapter.completeSubscriptionCacheLease(
+                        cacheKey,
+                        leaseToken,
+                        retryAfter
+                    );
+                }
+                if (cached?.nodes?.length) {
+                    return createNodeCountCacheResponse(
+                        cached,
+                        'STALE',
+                        error?.message || '机场刷新失败，暂时使用上次成功结果'
+                    );
+                }
+                throw error;
+            } finally {
+                if (
+                    leaseAcquired &&
+                    typeof lockStorageAdapter?.releaseSubscriptionCacheLease === 'function'
+                ) {
+                    try {
+                        await lockStorageAdapter.releaseSubscriptionCacheLease(cacheKey, leaseToken);
+                    } catch (leaseError) {
+                        console.warn(
+                            '[NodeHandler] Failed to release node-count refresh lease:',
+                            leaseError?.message || leaseError
+                        );
+                    }
+                }
+            }
+        })();
+
+        nodeCountRefreshes.set(cacheKey, refreshPromise);
+        try {
+            return await refreshPromise;
+        } finally {
+            if (nodeCountRefreshes.get(cacheKey) === refreshPromise) {
+                nodeCountRefreshes.delete(cacheKey);
+            }
+        }
+    } catch (error) {
+        return createErrorResponse(error?.message || '节点数更新失败', error?.status || 500);
+    }
+}
+
+async function handleNodeCountRequestUncached(request, env) {
     if (request.method !== 'POST') {
         return createErrorResponse('Method Not Allowed', 405);
     }
@@ -110,12 +382,19 @@ export async function handleNodeCountRequest(request, env) {
         let fetchError = null;
 
         let requestUrl = subUrl;
+        try {
+            const parsedUrl = new URL(requestUrl);
+            parsedUrl.searchParams.set('_t', Date.now().toString());
+            requestUrl = parsedUrl.toString();
+        } catch {
+            requestUrl += (requestUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
+        }
         const requestedUserAgent =
             typeof customUserAgent === 'string' ? customUserAgent.trim() : '';
         const processedUserAgent =
             requestedUserAgent || getProcessedUserAgent('v2rayN/7.23', subUrl);
         if (fetchProxy && typeof fetchProxy === 'string' && fetchProxy.trim()) {
-            requestUrl = buildFetchProxyUrl(fetchProxy, subUrl, processedUserAgent);
+            requestUrl = buildFetchProxyUrl(fetchProxy, requestUrl, processedUserAgent);
         }
 
         try {
@@ -380,6 +659,8 @@ export async function handleNodeCountRequest(request, env) {
                     fetchError = new Error(
                         `HTTP ${responses[1].value.status}: ${responses[1].value.statusText}`
                     );
+                    fetchError.status = responses[1].value.status;
+                    fetchError.retryAfter = responses[1].value.headers.get('retry-after');
                 console.error('Node count request returned error:', responses[1].value.status);
             }
 
@@ -418,6 +699,7 @@ export async function handleNodeCountRequest(request, env) {
                     error: errorMessage,
                     errorType: errorType,
                     status: fetchError?.status || null,
+                    retryAfter: fetchError?.retryAfter || null,
                     count: 0,
                     userInfo: result.userInfo || null,
                 });
@@ -477,7 +759,12 @@ export async function handleNodeCountRequest(request, env) {
                 if (fetchedNodeUrls.length === result.count) {
                     await saveSubscriptionNodeCache(
                         storageAdapter,
-                        { url: subUrl },
+                        {
+                            url: subUrl,
+                            fetchProxy,
+                            customUserAgent,
+                            plusAsSpace: Boolean(plusAsSpace),
+                        },
                         fetchedNodeUrls,
                         { userInfo: result.userInfo }
                     );
@@ -495,6 +782,9 @@ export async function handleNodeCountRequest(request, env) {
             });
         }
 
+        if (Number(result?.count) > 0) {
+            result.lastUpdated = new Date().toISOString();
+        }
         return createJsonResponse({
             success: true,
             data: result,
@@ -533,6 +823,12 @@ export async function handleBatchUpdateNodesRequest(request, env) {
             env,
             await StorageFactory.getStorageType(env)
         );
+        const lockStorageAdapter =
+            storageAdapter?.acquireSubscriptionCacheLease
+                ? storageAdapter
+                : env?.MISUB_DB
+                  ? StorageFactory.createAdapter(env, 'd1')
+                  : storageAdapter;
         const allSubscriptions = (await storageAdapter.get('misub_subscriptions_v1')) || [];
 
         // 过滤出要更新的订阅
@@ -558,12 +854,72 @@ export async function handleBatchUpdateNodesRequest(request, env) {
 
         // 并行获取所有订阅的节点（带超时）
         const updatePromises = targetSubscriptions.map(async (subscription) => {
+            const cacheKey = buildSubscriptionNodeCacheKey(subscription);
+            let leaseToken = null;
+            let leaseAcquired = false;
+
+            if (typeof lockStorageAdapter?.acquireSubscriptionCacheLease === 'function') {
+                try {
+                    leaseToken =
+                        typeof globalThis.crypto?.randomUUID === 'function'
+                            ? globalThis.crypto.randomUUID()
+                            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const lease = await lockStorageAdapter.acquireSubscriptionCacheLease(
+                        cacheKey,
+                        leaseToken,
+                        Date.now() + 2 * 60 * 1000,
+                        Date.now(),
+                        true
+                    );
+                    leaseAcquired = Boolean(lease?.acquired);
+                    if (!leaseAcquired) {
+                        const cached = await readSubscriptionNodeCache(
+                            storageAdapter,
+                            subscription
+                        );
+                        if (cached?.nodes?.length) {
+                            return {
+                                subscriptionId: subscription.id,
+                                subscriptionName: subscription.name,
+                                success: true,
+                                nodeCount: cached.nodeCount,
+                                userInfo: cached.metadata?.userInfo || null,
+                                cacheStatus: 'REFRESHING',
+                                error: null,
+                                lastUpdated: new Date().toISOString(),
+                            };
+                        }
+                        return {
+                            subscriptionId: subscription.id,
+                            subscriptionName: subscription.name,
+                            success: false,
+                            nodeCount: Number(subscription.nodeCount) || 0,
+                            userInfo: subscription.userInfo || null,
+                            error: '该机场正在刷新，请稍后重试',
+                            lastUpdated: new Date().toISOString(),
+                        };
+                    }
+                } catch (leaseError) {
+                    console.warn(
+                        '[NodeHandler] Batch refresh lease unavailable:',
+                        leaseError?.message || leaseError
+                    );
+                }
+            }
+
             try {
                 const effectiveUserAgent =
                     (typeof subscription.customUserAgent === 'string' &&
                         subscription.customUserAgent.trim()) ||
                     getProcessedUserAgent(userAgent, subscription.url);
                 let requestUrl = subscription.url;
+                try {
+                    const parsedUrl = new URL(requestUrl);
+                    parsedUrl.searchParams.set('_t', Date.now().toString());
+                    requestUrl = parsedUrl.toString();
+                } catch {
+                    requestUrl += (requestUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
+                }
                 if (
                     subscription.fetchProxy &&
                     typeof subscription.fetchProxy === 'string' &&
@@ -571,7 +927,7 @@ export async function handleBatchUpdateNodesRequest(request, env) {
                 ) {
                     requestUrl = buildFetchProxyUrl(
                         subscription.fetchProxy,
-                        subscription.url,
+                        requestUrl,
                         effectiveUserAgent
                     );
                 }
@@ -592,50 +948,168 @@ export async function handleBatchUpdateNodesRequest(request, env) {
                 const response = await Promise.race([fetchPromise, timeoutPromise]);
 
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    error.status = response.status;
+                    error.retryAfter = response.headers.get('retry-after');
+                    throw error;
                 }
 
+                const userInfo = extractUserInfo(response);
                 const text = await response.text();
 
                 // 使用与预览功能相同的解码和节点统计逻辑
                 let nodeCount = 0;
                 try {
                     // 使用 parseNodeList 函数，与预览功能完全一致
-                    const parsedNodes = parseNodeList(text);
+                    const parsedNodes = parseNodeList(text, {
+                        plusAsSpace: Boolean(subscription.plusAsSpace),
+                    });
                     nodeCount = parsedNodes.length;
                     const nodeUrls = parsedNodes.map((node) => node.url).filter(Boolean);
                     const knownNodeCount = Math.max(
                         Number(subscription.lastGoodNodeCount) || 0,
                         Number(subscription.nodeCount) || 0
                     );
-                    if (
-                        nodeUrls.length > 0 &&
-                        !isSuspiciousNodeCountDrop(knownNodeCount, nodeUrls.length)
-                    ) {
-                        await saveSubscriptionNodeCache(storageAdapter, subscription, nodeUrls);
+                    if (isSuspiciousNodeCountDrop(knownNodeCount, nodeUrls.length)) {
+                        const error = new Error(
+                            `节点数量异常缩水（${knownNodeCount} -> ${nodeUrls.length}），保留旧缓存`
+                        );
+                        error.code = 'SUSPICIOUS_NODE_COUNT_DROP';
+                        const cached = await readSubscriptionNodeCache(storageAdapter, subscription);
+                        const retryAfter = await recordSubscriptionCacheFailure(
+                            storageAdapter,
+                            subscription,
+                            cached,
+                            error
+                        );
+                        if (
+                            leaseAcquired &&
+                            typeof lockStorageAdapter?.completeSubscriptionCacheLease === 'function'
+                        ) {
+                            await lockStorageAdapter.completeSubscriptionCacheLease(
+                                cacheKey,
+                                leaseToken,
+                                retryAfter
+                            );
+                        }
+                        return {
+                            subscriptionId: subscription.id,
+                            subscriptionName: subscription.name,
+                            success: false,
+                            nodeCount: Number(subscription.nodeCount) || knownNodeCount,
+                            userInfo: subscription.userInfo || null,
+                            error: error.message,
+                            lastUpdated: new Date().toISOString(),
+                        };
+                    }
+                    if (nodeUrls.length === 0) {
+                        const error = new Error('机场未返回可用节点，保留上次成功缓存');
+                        error.code = 'EMPTY_SUBSCRIPTION_RESULT';
+                        const cached = await readSubscriptionNodeCache(storageAdapter, subscription);
+                        const retryAfter = await recordSubscriptionCacheFailure(
+                            storageAdapter,
+                            subscription,
+                            cached,
+                            error
+                        );
+                        if (
+                            leaseAcquired &&
+                            typeof lockStorageAdapter?.completeSubscriptionCacheLease === 'function'
+                        ) {
+                            await lockStorageAdapter.completeSubscriptionCacheLease(
+                                cacheKey,
+                                leaseToken,
+                                retryAfter
+                            );
+                        }
+                        return {
+                            subscriptionId: subscription.id,
+                            subscriptionName: subscription.name,
+                            success: false,
+                            nodeCount: Number(cached?.nodeCount) || knownNodeCount,
+                            userInfo: cached?.metadata?.userInfo || subscription.userInfo || null,
+                            error: error.message,
+                            lastUpdated: new Date().toISOString(),
+                        };
+                    }
+                    if (nodeUrls.length > 0) {
+                        const cacheSaved = await saveSubscriptionNodeCache(
+                            storageAdapter,
+                            subscription,
+                            nodeUrls,
+                            { userInfo }
+                        );
+                        if (cacheSaved && leaseAcquired) {
+                            await lockStorageAdapter.completeSubscriptionCacheLease(
+                                cacheKey,
+                                leaseToken,
+                                Date.now() + DEFAULT_SUBSCRIPTION_CACHE_TTL_MS
+                            );
+                        } else if (!cacheSaved) {
+                            const error = new Error('新节点结果未能安全写入缓存');
+                            error.code = 'SUSPICIOUS_NODE_COUNT_DROP';
+                            const cached = await readSubscriptionNodeCache(
+                                storageAdapter,
+                                subscription
+                            );
+                            const retryAfter = await recordSubscriptionCacheFailure(
+                                storageAdapter,
+                                subscription,
+                                cached,
+                                error
+                            );
+                            if (
+                                leaseAcquired &&
+                                typeof lockStorageAdapter?.completeSubscriptionCacheLease ===
+                                    'function'
+                            ) {
+                                await lockStorageAdapter.completeSubscriptionCacheLease(
+                                    cacheKey,
+                                    leaseToken,
+                                    retryAfter
+                                );
+                            }
+                            return {
+                                subscriptionId: subscription.id,
+                                subscriptionName: subscription.name,
+                                success: false,
+                                nodeCount: Number(subscription.nodeCount) || knownNodeCount,
+                                userInfo: cached?.metadata?.userInfo || subscription.userInfo || null,
+                                error: error.message,
+                                lastUpdated: new Date().toISOString(),
+                            };
+                        }
                     }
                 } catch (e) {
-                    // 解码失败，尝试简单统计
                     console.error('Batch update decode error:', e);
-                    try {
-                        const cleanedText = text.replace(/\s/g, '');
-                        const base64Regex = /^[A-Za-z0-9+\/=]+$/;
-                        if (base64Regex.test(cleanedText) && cleanedText.length >= 20) {
-                            const binaryString = atob(cleanedText);
-                            const bytes = new Uint8Array(binaryString.length);
-                            for (let i = 0; i < binaryString.length; i++) {
-                                bytes[i] = binaryString.charCodeAt(i);
-                            }
-                            const processedText = new TextDecoder('utf-8').decode(bytes);
-                            nodeCount = (processedText.match(NODE_PROTOCOL_GLOBAL_REGEX) || [])
-                                .length;
-                        } else {
-                            nodeCount = (text.match(NODE_PROTOCOL_GLOBAL_REGEX) || []).length;
-                        }
-                    } catch {
-                        // 如果都失败，使用原始文本进行统计
-                        nodeCount = (text.match(NODE_PROTOCOL_GLOBAL_REGEX) || []).length;
+                    const cached = await readSubscriptionNodeCache(storageAdapter, subscription);
+                    const error = new Error(`机场节点解析失败：${e?.message || '未知错误'}`);
+                    error.code = 'EMPTY_SUBSCRIPTION_RESULT';
+                    const retryAfter = await recordSubscriptionCacheFailure(
+                        storageAdapter,
+                        subscription,
+                        cached,
+                        error
+                    );
+                    if (
+                        leaseAcquired &&
+                        typeof lockStorageAdapter?.completeSubscriptionCacheLease === 'function'
+                    ) {
+                        await lockStorageAdapter.completeSubscriptionCacheLease(
+                            cacheKey,
+                            leaseToken,
+                            retryAfter
+                        );
                     }
+                    return {
+                        subscriptionId: subscription.id,
+                        subscriptionName: subscription.name,
+                        success: false,
+                        nodeCount: Number(cached?.nodeCount) || Number(subscription.nodeCount) || 0,
+                        userInfo: cached?.metadata?.userInfo || subscription.userInfo || null,
+                        error: error.message,
+                        lastUpdated: new Date().toISOString(),
+                    };
                 }
 
                 return {
@@ -643,18 +1117,51 @@ export async function handleBatchUpdateNodesRequest(request, env) {
                     subscriptionName: subscription.name,
                     success: true,
                     nodeCount,
+                    userInfo,
                     error: null,
                     lastUpdated: new Date().toISOString(),
                 };
             } catch (e) {
+                const cached = await readSubscriptionNodeCache(storageAdapter, subscription);
+                const retryAfter = await recordSubscriptionCacheFailure(
+                    storageAdapter,
+                    subscription,
+                    cached,
+                    e
+                );
+                if (
+                    leaseAcquired &&
+                    typeof lockStorageAdapter?.completeSubscriptionCacheLease === 'function'
+                ) {
+                    await lockStorageAdapter.completeSubscriptionCacheLease(
+                        cacheKey,
+                        leaseToken,
+                        retryAfter
+                    );
+                }
                 return {
                     subscriptionId: subscription.id,
                     subscriptionName: subscription.name,
                     success: false,
-                    nodeCount: 0,
+                    nodeCount: Number(cached?.nodeCount) || Number(subscription.nodeCount) || 0,
+                    userInfo: cached?.metadata?.userInfo || subscription.userInfo || null,
                     error: e.message,
                     lastUpdated: new Date().toISOString(),
                 };
+            } finally {
+                if (
+                    leaseAcquired &&
+                    typeof lockStorageAdapter?.releaseSubscriptionCacheLease === 'function'
+                ) {
+                    try {
+                        await lockStorageAdapter.releaseSubscriptionCacheLease(cacheKey, leaseToken);
+                    } catch (leaseError) {
+                        console.warn(
+                            '[NodeHandler] Failed to release batch refresh lease:',
+                            leaseError?.message || leaseError
+                        );
+                    }
+                }
             }
         });
 

@@ -346,7 +346,7 @@ class D1StorageAdapter {
     async acquireSubscriptionCacheLease(cacheKey, token, leaseUntil, now, forceRefresh = false) {
         await ensureSubscriptionCacheLockSchema(this.db);
 
-        const result = await this.db
+        await this.db
             .prepare(`
                 INSERT INTO subscription_cache_locks
                     (cache_key, token, lease_until, next_refresh_at)
@@ -368,7 +368,7 @@ class D1StorageAdapter {
             .first();
 
         return {
-            acquired: Number(result?.meta?.changes) > 0 && current?.token === token,
+            acquired: current?.token === token,
             leaseUntil: Number(current?.lease_until) || 0,
             nextRefreshAt: Number(current?.next_refresh_at) || 0,
         };
@@ -396,6 +396,15 @@ class D1StorageAdapter {
                 WHERE cache_key = ? AND token = ?
             `)
             .bind(cacheKey, token)
+            .run();
+        return true;
+    }
+
+    async deleteSubscriptionCacheLease(cacheKey) {
+        await ensureSubscriptionCacheLockSchema(this.db);
+        await this.db
+            .prepare('DELETE FROM subscription_cache_locks WHERE cache_key = ?')
+            .bind(cacheKey)
             .run();
         return true;
     }

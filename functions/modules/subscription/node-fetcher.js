@@ -1,6 +1,7 @@
 import { parseNodeList } from '../utils/node-parser.js';
 import { fetchWithRetry } from '../../services/fetch-utils.js';
 import { buildFetchProxyUrl } from '../../utils/fetch-proxy-utils.js';
+import { getProcessedUserAgent } from '../../utils/format-utils.js';
 import { getOrFetchSubscriptionNodes } from '../../services/subscription-node-cache-service.js';
 import {
     filterNodeObjects,
@@ -35,14 +36,16 @@ export async function fetchSubscriptionNodes(
     fetchProxy = null,
     skipCertVerify = false,
     plusAsSpace = false,
-    enableNodeCache = false,
+    enableNodeCache = true,
     cacheOptions = {}
 ) {
     const shouldDebug = debug || (url && url.includes('b0b422857bb46aba65da8234c84f38c6'));
 
     try {
         const effectiveUserAgent =
-            customUserAgent && customUserAgent.trim() !== '' ? customUserAgent : userAgent;
+            customUserAgent && customUserAgent.trim() !== ''
+                ? customUserAgent.trim()
+                : getProcessedUserAgent(userAgent, url);
 
         const fetchNodes = async () => {
             let requestUrl = url;
@@ -94,14 +97,17 @@ export async function fetchSubscriptionNodes(
         };
 
         let resolved;
-        if (cacheOptions.storage) {
+        if (cacheOptions.storage && enableNodeCache) {
             resolved = await getOrFetchSubscriptionNodes({
                 storage: cacheOptions.storage,
                 lockStorage: cacheOptions.lockStorage || cacheOptions.storage,
                 subscription: cacheOptions.subscription || { url },
                 fetchNodes,
                 forceRefresh: cacheOptions.forceRefresh === true,
-                knownNodeCount: Number(cacheOptions.subscription?.nodeCount) || 0,
+                knownNodeCount: Math.max(
+                    Number(cacheOptions.subscription?.nodeCount) || 0,
+                    Number(cacheOptions.subscription?.lastGoodNodeCount) || 0
+                ),
             });
         } else {
             resolved = await fetchNodes();

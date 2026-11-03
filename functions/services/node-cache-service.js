@@ -224,6 +224,9 @@ export function getCacheConfig() {
 export async function clearCache(storageAdapter, cacheKey) {
     try {
         await storageAdapter.delete(cacheKey);
+        if (typeof storageAdapter.deleteSubscriptionCacheLease === 'function') {
+            await storageAdapter.deleteSubscriptionCacheLease(cacheKey);
+        }
 
         return true;
     } catch (error) {
@@ -248,6 +251,7 @@ export async function clearAllNodeCaches(storageAdapter, options = {}) {
                 ? options.preserveKeys.filter(isSubscriptionNodeCacheKey)
                 : []
         );
+        const lockStorage = options?.lockStorage || storageAdapter;
 
         // 循环处理分页，KV list 默认最多返回 1000 个 key
         do {
@@ -289,6 +293,9 @@ export async function clearAllNodeCaches(storageAdapter, options = {}) {
                         await storageAdapter.kv.delete(key);
                     } else {
                         await storageAdapter.delete(key);
+                    }
+                    if (typeof lockStorage?.deleteSubscriptionCacheLease === 'function') {
+                        await lockStorage.deleteSubscriptionCacheLease(key);
                     }
                     cleared++;
                 } catch {
